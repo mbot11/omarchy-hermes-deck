@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Stub omarchy-launch-tui for deck-act tests: records the exact argv (as a
+# JSON array including the launcher name) to $DECK_ACT_RECORD so tests
+# assert the precise command that would launch.
+set -euo pipefail
+python3 -c 'import json,sys; print(json.dumps(["omarchy-launch-tui"] + sys.argv[1:]))' "$@" >"${DECK_ACT_RECORD:?DECK_ACT_RECORD not set}"

@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.mbot11.hermes-deck",
+  "name": "Hermes Deck",
+  "version": "0.1.0",
+  "author": "mbot11",
+  "license": "MIT",
+  "description": "Live Hermes Agent companion for Omarchy: status, sessions, usage, kanban, controls, and a drop-down TUI.",
+  "kinds": ["service", "bar-widget"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Hermes Deck",
+    "description": "Hermes Agent status, sessions, usage, kanban, and controls.",
+    "category": "AI",
+    "aliases": ["hermes", "hermes-agent"],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 15
+    },
+    "schema": [
+      {
+        "key": "showKanban",
+        "type": "boolean",
+        "label": "Show Kanban section",
+        "defaultValue": true
+      },
+      {
+        "key": "notify",
+        "type": "boolean",
+        "label": "Desktop notifications for agent events",
+        "defaultValue": true
+      }
+    ]
+  }
+}

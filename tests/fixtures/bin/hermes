@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Stub `hermes` CLI for offline tests. Records exact argv (one JSON array
+# per line) to $DECK_ACT_RECORD when set, then answers only the
+# subcommands the collector and deck-act tests may invoke.
+set -euo pipefail
+if [[ -n ${DECK_ACT_RECORD:-} ]]; then
+  python3 -c 'import json,sys; print(json.dumps(["hermes"] + sys.argv[1:]))' "$@" >>"$DECK_ACT_RECORD"
+fi
+case "${1:-}" in
+  --version) echo "stub 1.2.3" ;;
+  pause) exit 0 ;;
+  resume) exit 0 ;;
+  gateway) [[ ${2:-} == restart ]] && exit 0; exit 64 ;;
+  config)
+    case "${2:-} ${3:-}" in
+      "get model.default") echo "cli-resolved-model"; exit 0 ;;
+      "set model.default") exit 0 ;;
+      *) exit 64 ;;
+    esac
+    ;;
+  auth)
+    [[ ${2:-} == list ]] || exit 64
+    cat <<'EOF'
+openai-codex (1 credentials):
+  #1  example-codex-oauth-1    oauth   device_code ←
+
+xai-oauth (1 credentials):
+  #1  example-xai-oauth-1    oauth   device_code ←
+EOF
+    ;;
+  kanban)
+    [[ ${2:-} == boards && ${3:-} == list ]] || exit 64
+    cat <<'EOF'
+[
+  {"slug": "default", "name": "Default", "total": 3, "counts": {"running": 1, "review": 2}, "is_current": true}
+]
+EOF
+    ;;
+  *) echo "stub hermes: unsupported call: $*" >&2; exit 64 ;;
+esac

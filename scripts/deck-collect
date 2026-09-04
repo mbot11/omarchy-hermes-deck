@@ -1,0 +1,536 @@
+#!/usr/bin/env python3
+"""Hermes Deck state collector.
+
+Emits one JSON snapshot of a local Hermes Agent installation on stdout.
+Stdlib only; no third-party packages, no pip installs.
+
+Two cadences, driven by flags:
+
+- Fast path (default, runs every few seconds): pure local reads only —
+  the Hermes state database opened read-only, a micro-parse of the top
+  `model` value in config.yaml, the ESTOP emergency-stop sentinel, and
+  read-only systemctl queries for the gateway unit. No `hermes` process
+  is spawned (a cold Hermes CLI costs seconds of Python startup).
+- Slow path (--include-slow / --include-kanban): TTL-cached fields that
+  need the Hermes CLI — version, auth-provider summary, model fallback,
+  kanban boards. Refreshed only when the cache is stale; results live in
+  $XDG_STATE_HOME/omarchy/hermes-deck/cache.json.
+
+Fail-muted: every section is individually guarded; a missing database or
+a failing CLI call degrades that section and adds a note to `errors`,
+never aborts the snapshot. Secrets (auth.json, .env, credential files)
+are never read, printed, or copied.
+
+Exit code is always 0 when a JSON object was produced.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import select
+import shutil
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
+from urllib.parse import quote
+
+SNAPSHOT_VERSION = 2
+PLUGIN_ID = "hermes-deck"
+
+DB_PATH = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes") / "state.db"
+HERMES_HOME = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
+CONFIG_PATH = HERMES_HOME / "config.yaml"
+STATE_DIR = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "omarchy" / PLUGIN_ID
+CACHE_PATH = STATE_DIR / "cache.json"
+GATEWAY_UNIT = "hermes-gateway.service"
+
+SESSIONS_LIMIT = 12
+MAX_SESSION_TITLE = 200
+MAX_MODEL_LEN = 200
+MAX_REASON_LEN = 300
+MAX_ERRORS = 8
+MAX_OUTPUT_BYTES = 65536
+DB_CELL_CAP = 4096
+
+TTL_VERSION = 30 * 60
+TTL_AUTH = 10 * 60
+TTL_MODEL_CLI = 10 * 60
+TTL_KANBAN = 60
+
+ACTIVE_WINDOW_SECONDS = 90
+
+errors: list[str] = []
+
+
+def note(message: str) -> None:
+    if len(errors) < MAX_ERRORS:
+        errors.append(str(message)[:500])
+
+
+def clip(value, limit: int) -> str:
+    return str(value if value is not None else "")[:limit]
+
+
+def day_start(day: datetime) -> float:
+    return day.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+
+def as_int(value, default: int = 0) -> int:
+    """SQLite columns are dynamically typed; never trust a numeric coercion."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def as_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+def resolve_hermes() -> str | None:
+    """PATH first, then the standard user/system locations.
+
+    The Omarchy shell's PATH can omit ~/.local/bin — where Hermes
+    self-installs — so PATH-only resolution reports a healthy install as
+    missing and would break slow fields.
+    """
+    found = shutil.which("hermes")
+    if found:
+        return found
+    home = Path.home()
+    for candidate in (home / ".local/bin/hermes", Path("/usr/local/bin/hermes"),
+                      Path("/usr/bin/hermes")):
+        try:
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+        except OSError:
+            continue
+    note("hermes resolve failed: which=%s home=%s exists=%s" % (
+        shutil.which("hermes"), Path.home(), (Path.home() / ".local/bin/hermes").exists()))
+    return None
+
+
+def run_cmd(argv: list, timeout: float) -> str:
+    """Run a fixed-argument command; return at most MAX_OUTPUT_BYTES of stdout.
+
+    The child's stdout is drained incrementally under a hard byte cap and a
+    deadline: past the cap the child is killed outright, so a pathological
+    stream can neither balloon memory nor outlive the timeout.
+    """
+    try:
+        proc = subprocess.Popen(
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+        )
+    except OSError:
+        return ""
+    deadline = time.monotonic() + timeout
+    buf = bytearray()
+    try:
+        while True:
+            if len(buf) >= MAX_OUTPUT_BYTES or time.monotonic() >= deadline:
+                proc.kill()
+                break
+            ready, _, _ = select.select([proc.stdout], [], [], 0.5)
+            if not ready:
+                continue
+            chunk = os.read(proc.stdout.fileno(), 8192)
+            if not chunk:
+                break
+            room = MAX_OUTPUT_BYTES - len(buf)
+            buf += chunk[:room] if room > 0 else b""
+    finally:
+        try:
+            proc.wait(timeout=5)
+        except subprocess.SubprocessError:
+            proc.kill()
+    return bytes(buf[:MAX_OUTPUT_BYTES]).decode("utf-8", "replace")
+
+
+# ── Fast path ────────────────────────────────────────────────────────────
+
+def db_connect():
+    if not DB_PATH.exists():
+        return None
+    # Percent-encode the path: URI delimiters (?, #, %) in HERMES_HOME would
+    # otherwise break the URI or silently drop mode=ro.
+    uri = "file:" + quote(str(DB_PATH)) + "?mode=ro"
+    try:
+        return sqlite3.connect(uri, uri=True, timeout=0.5)
+    except sqlite3.Error as exc:
+        note(f"state.db unavailable: {exc.__class__.__name__}")
+        return None
+
+
+def collect_db(conn) -> dict:
+    """Everything read from the Hermes state database."""
+    now = datetime.now().astimezone()
+    today0 = day_start(now)
+    week0 = day_start(now - timedelta(days=6))
+    month0 = day_start(now - timedelta(days=29))
+    out: dict = {
+        "activity": {"working": False, "lastMessageAt": None, "secondsSinceLastMessage": None},
+        "usage": {},
+        "sessions": [],
+    }
+    try:
+        row = conn.execute(
+            "SELECT MAX(timestamp), "
+            "(SELECT COUNT(*) FROM messages WHERE role = 'user' AND timestamp >= ?), "
+            "(SELECT COUNT(*) FROM sessions WHERE started_at >= ?) "
+            "FROM messages",
+            (today0, today0),
+        ).fetchone()
+        last_ts, prompts_today, sessions_today = row[0], as_int(row[1]), as_int(row[2])
+        if last_ts is not None:
+            since = max(0.0, time.time() - as_float(last_ts))
+            out["activity"] = {
+                "working": since <= ACTIVE_WINDOW_SECONDS,
+                "lastMessageAt": as_float(last_ts),
+                "secondsSinceLastMessage": round(since, 1),
+            }
+        out["usage"] = {
+            "today": {"prompts": prompts_today, "sessions": sessions_today},
+        }
+
+        usage_sql = (
+            "SELECT smu.model, "
+            "SUM(smu.input_tokens + smu.output_tokens + smu.cache_read_tokens + smu.cache_write_tokens), "
+            "SUM(smu.estimated_cost_usd) "
+            "FROM session_model_usage smu JOIN sessions s ON s.id = smu.session_id "
+            "WHERE s.started_at >= ? GROUP BY smu.model"
+        )
+
+        def usage_window(window_start: float) -> tuple[dict, list]:
+            by_model: dict = {}
+            total_tokens = 0
+            total_cost = 0.0
+            for model, tokens, cost in conn.execute(usage_sql, (window_start,)):
+                if not tokens and not cost:
+                    continue
+                entry = {"model": clip(model, MAX_MODEL_LEN), "tokens": as_int(tokens),
+                         "costUsd": round(as_float(cost), 6)}
+                by_model.setdefault(entry["model"], entry)
+                total_tokens += as_int(tokens)
+                total_cost += as_float(cost)
+            ranked = sorted(by_model.values(), key=lambda e: -e["tokens"])[:8]
+            return {"tokens": total_tokens, "costUsd": round(total_cost, 6)}, ranked
+
+        for key, start in (("today", today0), ("week", week0), ("month", month0)):
+            if key == "today":
+                totals, ranked = usage_window(today0)
+                out["usage"][key].update(totals)
+                out["usage"]["byModelToday"] = ranked
+            else:
+                out["usage"][key] = usage_window(start)[0]
+
+        sessions: list = []
+        for sid, title, display, source, model, msgs, started, last_at, cwd, pinned, cost in conn.execute(
+            "SELECT id, title, display_name, source, model, message_count, started_at, "
+            "last_activity_at, cwd, pinned, estimated_cost_usd "
+            "FROM sessions WHERE hidden = 0 AND archived = 0 "
+            "ORDER BY COALESCE(last_activity_at, started_at) DESC LIMIT ?",
+            (SESSIONS_LIMIT,),
+        ):
+            sessions.append({
+                "id": clip(sid, 128),
+                "title": clip(title or display, MAX_SESSION_TITLE),
+                "source": clip(source, 32),
+                "model": clip(model, MAX_MODEL_LEN),
+                "messages": as_int(msgs),
+                "startedAt": as_float(started) if started is not None else None,
+                "lastActivityAt": as_float(last_at) if last_at is not None else None,
+                "workspace": clip(Path(str(cwd)).name if cwd else "", 120),
+                "pinned": bool(pinned),
+                "costUsd": round(as_float(cost), 6) if cost is not None else None,
+            })
+        out["sessions"] = sessions
+    except (sqlite3.Error, ValueError, TypeError) as exc:
+        note(f"state.db query failed: {exc.__class__.__name__}")
+    return out
+
+def collect_gateway() -> dict:
+    state = run_cmd(["/usr/bin/systemctl", "--user", "is-active", GATEWAY_UNIT], 3).strip() or "unknown"
+    enabled = run_cmd(["/usr/bin/systemctl", "--user", "is-enabled", GATEWAY_UNIT], 3).strip() or "unknown"
+    return {"serviceState": state, "enabled": enabled}
+
+
+def collect_estop() -> dict:
+    """Emergency-stop sentinel: $HERMES_HOME/ESTOP (JSON payload)."""
+    path = HERMES_HOME / "ESTOP"
+    if not path.exists():
+        return {"paused": False, "reason": "", "engagedAt": None}
+    try:
+        raw = path.read_bytes()[:4096].decode("utf-8", "replace")
+        payload = json.loads(raw) if raw.strip() else {}
+        if not isinstance(payload, dict):
+            payload = {}
+    except (OSError, ValueError):
+        return {"paused": True, "reason": "", "engagedAt": None}
+    return {
+        "paused": True,
+        "reason": clip(payload.get("reason"), MAX_REASON_LEN),
+        "engagedAt": payload.get("engaged_at"),
+    }
+
+
+def parse_model_config() -> str:
+    """Extract the active model from config.yaml without a YAML dependency.
+
+    Handles the shapes Hermes writes: a scalar (`model: id`), a mapping with
+    a `default:` child, and dict-format custom-endpoint blocks (issue class
+    from hermes-harness#2 — those fall through to the CLI fallback instead
+    of returning a wrong answer).
+    """
+    try:
+        raw = CONFIG_PATH.read_bytes()[:262144].decode("utf-8", "replace")
+    except OSError:
+        return ""
+    model_value = ""
+    in_block = False
+    block_has_default = False
+    block_is_dict = False
+    for line in raw.splitlines():
+        stripped = line.split("#", 1)[0].rstrip()
+        if not stripped.strip():
+            continue
+        indent = len(stripped) - len(stripped.lstrip(" "))
+        if indent == 0:
+            if in_block and not block_has_default and block_is_dict:
+                # dict-format model block without `default:` — refuse to guess
+                return ""
+            if in_block:
+                return model_value
+            key, _, rest = stripped.partition(":")
+            if key.strip() != "model":
+                continue
+            value = rest.strip().strip('"').strip("'")
+            if value:
+                return value[:MAX_MODEL_LEN]
+            in_block = True
+            block_is_dict = True
+            continue
+        if in_block:
+            key, _, rest = stripped.strip().partition(":")
+            if key == "default":
+                value = rest.strip().strip('"').strip("'")
+                if value:
+                    block_has_default = True
+                    model_value = value[:MAX_MODEL_LEN]
+    if in_block and not block_has_default and block_is_dict:
+        return ""
+    return model_value
+
+
+# ── Slow path (TTL-cached CLI fields) ───────────────────────────────────
+
+def load_cache() -> dict:
+    try:
+        payload = json.loads(CACHE_PATH.read_text("utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_cache(cache: dict) -> None:
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        # Sweep orphan scratch files from a previous crashed write before
+        # creating a new one.
+        for stale in STATE_DIR.glob(".cache.*"):
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+        fd, tmp = tempfile.mkstemp(prefix=".cache.", dir=STATE_DIR)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(json.dumps(cache, separators=(",", ":")))
+        os.replace(tmp, CACHE_PATH)
+    except OSError:
+        note("cache write failed")
+
+
+def cache_get(cache: dict, key: str, ttl: float) -> str | dict | None:
+    entry = cache.get(key)
+    if not isinstance(entry, dict):
+        return None
+    # A hand-edited or corrupt cache must never abort the snapshot: an
+    # unusable timestamp reads as stale and the field refreshes instead.
+    stamp = as_float(entry.get("at", 0))
+    if time.time() - stamp > ttl:
+        return None
+    return entry.get("value")
+
+
+def cache_put(cache: dict, key: str, value) -> None:
+    cache[key] = {"value": value, "at": time.time()}
+
+
+def slow_version(cache: dict, refresh: bool) -> str:
+    cached = cache_get(cache, "version", TTL_VERSION)
+    if isinstance(cached, str) and cached:
+        return cached
+    if not refresh:
+        stale = cache.get("version")
+        return str(stale.get("value")) if isinstance(stale, dict) else ""
+    hermes = resolve_hermes()
+    if not hermes:
+        return ""
+    first = (run_cmd([hermes, "--version"], 20).splitlines() or [""])[0].strip()
+    value = clip(first, 200)
+    if value:
+        cache_put(cache, "version", value)
+        save_cache(cache)
+    return value
+
+
+def slow_model_fallback(cache: dict, refresh: bool) -> str:
+    cached = cache_get(cache, "modelCli", TTL_MODEL_CLI)
+    if isinstance(cached, str) and cached:
+        return cached
+    if not refresh:
+        stale = cache.get("modelCli")
+        return str(stale.get("value")) if isinstance(stale, dict) else ""
+    hermes = resolve_hermes()
+    if not hermes:
+        return ""
+    value = clip(run_cmd([hermes, "config", "get", "model.default"], 20).strip(), MAX_MODEL_LEN)
+    if value:
+        cache_put(cache, "modelCli", value)
+        save_cache(cache)
+    return value
+
+
+def slow_auth(cache: dict, refresh: bool) -> list:
+    cached = cache_get(cache, "auth", TTL_AUTH)
+    if isinstance(cached, list):
+        return cached
+    if not refresh:
+        stale = cache.get("auth")
+        return stale if isinstance(stale, list) else []
+    hermes = resolve_hermes()
+    if not hermes:
+        return []
+    providers: list = []
+    current = None
+    for line in run_cmd([hermes, "auth", "list"], 30).splitlines():
+        if not line.strip():
+            continue
+        if not line.startswith(" "):
+            name = line.split("(")[0].strip().rstrip(":")
+            current = {"provider": clip(name, 64), "credentials": 0}
+            providers.append(current)
+        elif current is not None and line.strip().startswith("#"):
+            current["credentials"] += 1
+    if providers:
+        cache_put(cache, "auth", providers)
+        save_cache(cache)
+    return providers
+
+
+def slow_kanban(cache: dict, include: bool) -> dict:
+    cached = cache_get(cache, "kanban", TTL_KANBAN)
+    if isinstance(cached, dict):
+        return cached
+    if not include:
+        stale = cache.get("kanban")
+        return stale if isinstance(stale, dict) else {"available": False, "boards": []}
+    hermes = resolve_hermes()
+    if not hermes:
+        return {"available": False, "boards": []}
+    raw = run_cmd([hermes, "kanban", "boards", "list", "--json"], 30).strip()
+    try:
+        boards = json.loads(raw)
+        if not isinstance(boards, list):
+            raise ValueError("boards is not a list")
+    except ValueError:
+        note("kanban boards unavailable")
+        return {"available": False, "boards": []}
+    clean = []
+    for board in boards[:12]:
+        if not isinstance(board, dict):
+            continue
+        clean.append({
+            "slug": clip(board.get("slug"), 64),
+            "name": clip(board.get("name"), 120),
+            "total": as_int(board.get("total")),
+            "counts": board.get("counts") if isinstance(board.get("counts"), dict) else {},
+            "isCurrent": bool(board.get("is_current")),
+        })
+    result = {"available": bool(clean), "boards": clean, "fetchedAt": time.time()}
+    cache_put(cache, "kanban", result)
+    save_cache(cache)
+    return result
+
+
+# ── Main ────────────────────────────────────────────────────────────────
+
+def collect(include_slow: bool, include_kanban: bool) -> dict:
+    hermes_bin = resolve_hermes()
+    cache = load_cache()
+    snapshot: dict = {
+        "schemaVersion": SNAPSHOT_VERSION,
+        "id": PLUGIN_ID,
+        "generatedAt": datetime.now().astimezone().isoformat(),
+        "installed": hermes_bin is not None,
+        "version": "",
+        "model": "",
+        "modelSource": "unknown",
+        "auth": [],
+        "kanban": {"available": False, "boards": []},
+        "activity": {"working": False, "lastMessageAt": None, "secondsSinceLastMessage": None},
+        "usage": {},
+        "sessions": [],
+        "errors": errors,
+    }
+
+    snapshot["gateway"] = collect_gateway()
+    snapshot.update(collect_estop())
+    snapshot["paused"] = bool(snapshot.get("paused"))
+
+    # Slow fields guard `hermes` internally; the flags only decide whether a
+    # stale TTL field may trigger a CLI call.
+    snapshot["version"] = slow_version(cache, include_slow)
+    snapshot["auth"] = slow_auth(cache, include_slow)
+    snapshot["kanban"] = slow_kanban(cache, include_kanban)
+    model = parse_model_config() if CONFIG_PATH.exists() else ""
+    if model:
+        snapshot["model"], snapshot["modelSource"] = model, "config"
+    else:
+        fallback = slow_model_fallback(cache, include_slow)
+        if fallback:
+            snapshot["model"], snapshot["modelSource"] = fallback, "cli"
+
+    if DB_PATH.exists():
+        conn = db_connect()
+        if conn is not None:
+            try:
+                snapshot.update(collect_db(conn))
+            finally:
+                conn.close()
+    else:
+        note("state.db not found")
+
+    snapshot["errors"] = errors
+    return snapshot
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    include_slow = "--include-slow" in args
+    include_kanban = "--include-kanban" in args
+    payload = json.dumps(collect(include_slow, include_kanban), separators=(",", ":"))
+    sys.stdout.write(payload + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

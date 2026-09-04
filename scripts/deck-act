@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# Hermes Deck action dispatcher.
+#
+# The only component allowed to *change* Hermes state from the plugin. Every
+# action is a fixed-argument exec of a documented Hermes/Omarchy command; the
+# caller passes an action name, never a command string. Dynamic values (a
+# session id, a model id, a chat prompt) are validated here before use.
+#
+# Usage: deck-act <action> [arg]
+#   pause                        hermes pause
+#   resume                       hermes resume
+#   gateway-restart              hermes gateway restart
+#   new-session [prompt]         launch Hermes TUI, optionally seeded with -z
+#   resume-session <session-id>  resume a session in the Hermes TUI
+#   set-model <model-id>         hermes config set model.default <model-id>
+#
+# Prints "ok" on success; errors go to stderr with a nonzero exit.
+
+set -euo pipefail
+
+usage() {
+  echo "usage: deck-act pause|resume|gateway-restart|new-session [prompt]|resume-session <id>|set-model <model>" >&2
+  exit 64
+}
+
+# PATH first, then the standard user/system locations: the Omarchy shell's
+# PATH can omit ~/.local/bin, where Hermes self-installs.
+hermes_bin() {
+  if command -v hermes >/dev/null 2>&1; then
+    command -v hermes
+    return
+  fi
+  local candidate
+  for candidate in "$HOME/.local/bin/hermes" /usr/local/bin/hermes /usr/bin/hermes; do
+    [[ -x $candidate ]] && { printf '%s' "$candidate"; return; }
+  done
+  echo "deck-act: hermes not found on PATH or standard locations" >&2
+  exit 69
+}
+
+launch_tui() {
+  local app_id=org.omarchy.agent
+  # Pinned to the packaged launcher; the env override exists so tests can
+  # stub it. Same-user trust boundary either way.
+  exec "${OMARCHY_LAUNCH_TUI:-/usr/bin/omarchy-launch-tui}" --app-id="$app_id" "$@"
+}
+
+(( $# >= 1 )) || usage
+action=$1
+shift
+case "$action" in
+  pause)
+    exec "$(hermes_bin)" pause
+    ;;
+  resume)
+    exec "$(hermes_bin)" resume
+    ;;
+  gateway-restart)
+    exec "$(hermes_bin)" gateway restart
+    ;;
+  new-session)
+    prompt=${1:-}
+    if [[ -z $prompt ]]; then
+      launch_tui hermes --yolo
+    else
+      # -z seeds the interactive TUI with a prompt; passed as one argv entry.
+      launch_tui hermes --yolo -z "$prompt"
+    fi
+    ;;
+  resume-session)
+    (( $# == 1 )) || usage
+    session_id=$1
+    [[ $session_id =~ ^[0-9a-fA-F-]{8,64}$ ]] || {
+      echo "deck-act: invalid session id" >&2
+      exit 65
+    }
+    launch_tui hermes --tui --resume "$session_id"
+    ;;
+  set-model)
+    (( $# == 1 )) || usage
+    model_id=$1
+    # Model ids: alphanumerics plus . _ : / - (e.g. gpt-oss:120b, glm-5.3-flash).
+    # The first character may not be a dash, or the value could parse as a
+    # CLI option instead of a value.
+    [[ $model_id =~ ^[A-Za-z0-9._:/][A-Za-z0-9._:/-]{0,127}$ ]] || {
+      echo "deck-act: invalid model id" >&2
+      exit 65
+    }
+    exec "$(hermes_bin)" config set model.default "$model_id"
+    ;;
+  *)
+    usage
+    ;;
+esac

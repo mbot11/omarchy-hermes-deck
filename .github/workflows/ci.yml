@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Collector behavioral tests
+        run: python3 tests/test_collect.py
+      - name: Syntax checks
+        run: |
+          bash -n scripts/deck-act
+          python3 -m py_compile scripts/deck-collect
