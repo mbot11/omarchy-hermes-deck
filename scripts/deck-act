@@ -70,7 +70,7 @@ case "$action" in
   resume-session)
     (( $# == 1 )) || usage
     session_id=$1
-    [[ $session_id =~ ^[0-9a-fA-F-]{8,64}$ ]] || {
+    [[ $session_id =~ ^[0-9a-zA-Z_-]{8,64}$ ]] || {
       echo "deck-act: invalid session id" >&2
       exit 65
     }

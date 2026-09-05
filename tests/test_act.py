@@ -21,6 +21,7 @@ ACT = HERE.parent / "scripts" / "deck-act"
 STUB_BIN = HERE / "fixtures" / "bin"
 
 VALID_UUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+VALID_HERMES_ID = "20260904_204532_c3ca2e"
 
 
 class ActTests(unittest.TestCase):
@@ -52,6 +53,14 @@ class ActTests(unittest.TestCase):
         if argv and argv[0].endswith("/hermes"):
             argv[0] = "hermes"
         return argv
+    def test_resume_session_valid_hermes_id(self) -> None:
+        """Real Hermes ids are YYYYMMDD_HHMMSS_xxxxxx — the panel's session rows."""
+        proc = self.run_act("resume-session", VALID_HERMES_ID)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        argv = self.recorded_argv()
+        self.assertEqual(argv[0], "omarchy-launch-tui")
+        self.assertIn(VALID_HERMES_ID, argv)
+
     def test_resume_session_valid_uuid(self) -> None:
         proc = self.run_act("resume-session", VALID_UUID)
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -61,6 +70,7 @@ class ActTests(unittest.TestCase):
         self.assertIn("hermes", argv)
         self.assertIn("--resume", argv)
         self.assertIn(VALID_UUID, argv)
+
 
     def test_resume_session_rejects_shell_metacharacters(self) -> None:
         for bad in ("a;rm -rf /", "$(id)", "`id`", "x && y", "a\nb", "uuid; touch pwn"):

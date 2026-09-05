@@ -27,7 +27,8 @@ session, which is Hermes by definition, not a plugin action path). The
 dispatcher executes a fixed allowlist of documented commands with fixed
 arguments; dynamic values are validated before use:
 
-- session ids must match `^[0-9a-fA-F-]{8,64}$`;
+- session ids must match `^[0-9a-zA-Z_-]{8,64}$` (Hermes ids are
+  `YYYYMMDD_HHMMSS_xxxxxx`; UUID-style ids still pass);
 - model ids must match `^[A-Za-z0-9._:/][A-Za-z0-9._:/-]{0,127}\$`, so the
   first character may not be a dash, so no value can reach the Hermes CLI
   looking like an option flag;
