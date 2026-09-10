@@ -63,7 +63,7 @@ case "$action" in
     exec "$(hermes_bin)" gateway restart
     ;;
   launch-desktop)
-    exec "$UWSM_APP" -- "$HERMES_DESKTOP"
+    exec /usr/bin/setsid "$UWSM_APP" -- "$HERMES_DESKTOP"
     ;;
   set-default-agent)
     exec "$OMARCHY_BIN" default agent hermes

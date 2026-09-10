@@ -158,7 +158,6 @@ Panel {
             }
             Rectangle {
               visible: root.service !== null && root.service.isDefaultAgent === true
-              anchors.verticalCenter: parent.verticalCenter
               radius: Style.space(3)
               color: Qt.rgba(root.bar.foreground.r, root.bar.foreground.g, root.bar.foreground.b, 0.12)
               border.width: 1
