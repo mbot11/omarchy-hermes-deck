@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.mbot11.hermes-deck",
   "name": "Hermes Deck",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "mbot11",
   "license": "MIT",
   "description": "Live Hermes Agent companion for Omarchy: status, sessions, usage, kanban, controls, and a drop-down TUI.",

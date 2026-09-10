@@ -63,6 +63,22 @@ After a Hyprland config reload the window rule self-heals on next spawn.
 Kill stray terminals: close the tab (middle-click quit via IPC `hide`,
 then `hyprctl clients` cleanup if needed).
 
+## Default Agent or Desktop App setup
+
+To verify or configure Hermes as your native Omarchy default coding agent:
+
+```bash
+omarchy default agent
+omarchy default agent hermes
+```
+
+To install or verify the packaged Hermes desktop application:
+
+```bash
+omarchy install ai hermes
+which hermes-desktop
+```
+
 ## Clean reset
 
 ```bash

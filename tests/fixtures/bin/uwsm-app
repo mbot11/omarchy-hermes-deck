@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Stub uwsm-app for deck-act tests
+set -euo pipefail
+python3 -c 'import json,sys; print(json.dumps(["uwsm-app"] + sys.argv[1:]))' "$@" >"${DECK_ACT_RECORD:?DECK_ACT_RECORD not set}"

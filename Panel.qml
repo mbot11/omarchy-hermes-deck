@@ -146,13 +146,36 @@ Panel {
           anchors.verticalCenter: parent.verticalCenter
           spacing: Style.spacing.labelGap
 
-          Text {
-            text: "Hermes Deck"
-            textFormat: Text.PlainText
-            color: root.bar.foreground
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.title
-            font.bold: true
+          Row {
+            spacing: Style.space(8)
+            Text {
+              text: "Hermes Deck"
+              textFormat: Text.PlainText
+              color: root.bar.foreground
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.title
+              font.bold: true
+            }
+            Rectangle {
+              visible: root.service !== null && root.service.isDefaultAgent === true
+              anchors.verticalCenter: parent.verticalCenter
+              radius: Style.space(3)
+              color: Qt.rgba(root.bar.foreground.r, root.bar.foreground.g, root.bar.foreground.b, 0.12)
+              border.width: 1
+              border.color: "#4ec9d4"
+              implicitWidth: defaultAgentText.implicitWidth + Style.space(8)
+              implicitHeight: defaultAgentText.implicitHeight + Style.space(4)
+              Text {
+                id: defaultAgentText
+                anchors.centerIn: parent
+                text: "DEFAULT AGENT"
+                textFormat: Text.PlainText
+                color: "#4ec9d4"
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+            }
           }
 
           Text {
@@ -161,7 +184,7 @@ Panel {
               if (!root.service)
                 return "waiting for service"
               if (!root.service.installed)
-                return "Hermes not found on PATH"
+                return "Not installed · omarchy install ai hermes"
               var bits = []
               if (root.service.version)
                 bits.push(root.service.version.replace(/^Hermes Agent /, ""))
@@ -281,6 +304,29 @@ Panel {
               root.close()
             }
           }
+
+          Button {
+            visible: root.service !== null && root.service.desktopAvailable === true
+            text: "Open desktop"
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            bordered: true
+            enabled: root.service !== null && root.service.busy === false
+            onClicked: {
+              root.runAction("launch-desktop")
+              root.close()
+            }
+          }
+
+          Button {
+            visible: root.service !== null && root.service.installed === true && root.service.isDefaultAgent === false
+            text: "Set as default"
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            bordered: true
+            enabled: root.service !== null && root.service.busy === false
+            onClicked: root.runAction("set-default-agent")
+          }
         }
 
         Text {
@@ -304,7 +350,20 @@ Panel {
 
         InfoPair {
           label: "Gateway"
-          value: root.display(root.service && root.service.gatewayState, "unknown")
+          value: {
+            if (!root.service)
+              return "unknown"
+            var base = root.display(root.service.gatewayState, "unknown")
+            var platforms = root.service.connectedPlatforms
+            if (platforms && platforms.length > 0)
+              return base + " (" + platforms.join(", ") + ")"
+            return base
+          }
+        }
+        InfoPair {
+          visible: root.service !== null && root.service.activeAgentsCount > 0
+          label: "Active tasks"
+          value: root.service ? root.service.activeAgentsCount + " running" : ""
         }
         InfoPair {
           label: "Active model"
@@ -657,6 +716,9 @@ Panel {
             if (!sessionRow.session)
               return ""
             var bits = []
+            var badge = DeckState.platformBadge(sessionRow.session.source)
+            if (badge && badge !== "CLI")
+              bits.push("[" + badge + "]")
             bits.push(DeckState.relTime(sessionRow.session.lastActivityAt !== null && sessionRow.session.lastActivityAt !== undefined ? sessionRow.session.lastActivityAt : sessionRow.session.startedAt, Date.now()))
             if (sessionRow.session.workspace)
               bits.push(sessionRow.session.workspace)
@@ -664,7 +726,6 @@ Panel {
               bits.push(DeckState.shortenModel(sessionRow.session.model))
             return bits.join(" · ")
           }
-          textFormat: Text.PlainText
           color: Qt.darker(root.bar.foreground, 1.4)
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.caption

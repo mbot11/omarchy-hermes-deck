@@ -77,11 +77,13 @@ def make_db(path: Path, now: float) -> None:
     conn.close()
 
 
-def run_collect(home: Path, state_home: Path, *flags: str) -> dict:
+def run_collect(home: Path, state_home: Path, *flags: str, extra_env: dict | None = None) -> dict:
     env = dict(os.environ)
     env["HERMES_HOME"] = str(home)
     env["XDG_STATE_HOME"] = str(state_home)
     env["PATH"] = f"{STUB_BIN}:{env['PATH']}"
+    if extra_env:
+        env.update(extra_env)
     proc = subprocess.run(
         [sys.executable, str(COLLECT), *flags],
         capture_output=True,
@@ -205,6 +207,57 @@ class CollectorTests(unittest.TestCase):
         self.assertFalse(snap["installed"])
         self.assertEqual(snap["auth"], [])
         self.assertEqual(snap["kanban"]["available"], False)
+    def test_default_agent_detected(self) -> None:
+        self.write_config("model: glm-5.3-flash\n")
+        cfg_dir = Path(self.tmp.name) / "config" / "omarchy" / "defaults"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "agent").write_text("hermes\n")
+        snap = run_collect(self.home, self.state, extra_env={"XDG_CONFIG_HOME": str(Path(self.tmp.name) / "config")})
+        self.assertTrue(snap.get("isDefaultAgent"))
+
+    def test_default_agent_not_hermes(self) -> None:
+        self.write_config("model: glm-5.3-flash\n")
+        cfg_dir = Path(self.tmp.name) / "config" / "omarchy" / "defaults"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "agent").write_text("omp\n")
+        snap = run_collect(self.home, self.state, extra_env={"XDG_CONFIG_HOME": str(Path(self.tmp.name) / "config")})
+        self.assertFalse(snap.get("isDefaultAgent"))
+
+    def test_desktop_available_detection(self) -> None:
+        self.write_config("model: glm-5.3-flash\n")
+        bin_dir = Path(self.tmp.name) / "mock_bin"
+        bin_dir.mkdir()
+        desktop_bin = bin_dir / "hermes-desktop"
+        desktop_bin.write_text("#!/bin/sh\nexit 0\n")
+        desktop_bin.chmod(0o755)
+        # Prepend mock_bin to PATH
+        snap = run_collect(self.home, self.state, extra_env={"PATH": f"{bin_dir}:{STUB_BIN}:{os.environ['PATH']}"})
+        self.assertTrue(snap.get("desktopAvailable"))
+
+    def test_gateway_platforms_and_active_agents(self) -> None:
+        self.write_config("model: glm-5.3-flash\n")
+        gw_file = self.home / "gateway_state.json"
+        gw_file.write_text(json.dumps({
+            "gateway_state": "running",
+            "active_agents": 3,
+            "platforms": {
+                "telegram": {"state": "connected"},
+                "slack": {"state": "disconnected"}
+            }
+        }))
+        snap = run_collect(self.home, self.state)
+        gw = snap.get("gateway", {})
+        self.assertEqual(gw.get("activeAgentsCount"), 3)
+        self.assertEqual(gw.get("connectedPlatforms"), ["telegram"])
+
+    def test_gateway_state_corrupt_fails_soft(self) -> None:
+        self.write_config("model: glm-5.3-flash\n")
+        gw_file = self.home / "gateway_state.json"
+        gw_file.write_text("garbage{invalid")
+        snap = run_collect(self.home, self.state)
+        gw = snap.get("gateway", {})
+        self.assertEqual(gw.get("activeAgentsCount"), 0)
+        self.assertEqual(gw.get("connectedPlatforms"), [])
 
 
 if __name__ == "__main__":

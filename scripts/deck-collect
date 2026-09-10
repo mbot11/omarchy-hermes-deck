@@ -257,11 +257,57 @@ def collect_db(conn) -> dict:
         note(f"state.db query failed: {exc.__class__.__name__}")
     return out
 
+def check_default_agent() -> bool:
+    """Check if Hermes is configured as Omarchy's default coding agent."""
+    cfg_home = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    agent_file = cfg_home / "omarchy" / "defaults" / "agent"
+    try:
+        if agent_file.is_file():
+            return agent_file.read_text(encoding="utf-8").strip() == "hermes"
+    except OSError:
+        pass
+    return False
+
+
+def check_desktop_available() -> bool:
+    """Check if the native Hermes Desktop application is installed."""
+    found = shutil.which("hermes-desktop")
+    if found:
+        return True
+    for candidate in (Path("/usr/bin/hermes-desktop"), Path("/usr/local/bin/hermes-desktop")):
+        try:
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def collect_gateway() -> dict:
     state = run_cmd(["/usr/bin/systemctl", "--user", "is-active", GATEWAY_UNIT], 3).strip() or "unknown"
     enabled = run_cmd(["/usr/bin/systemctl", "--user", "is-enabled", GATEWAY_UNIT], 3).strip() or "unknown"
-    return {"serviceState": state, "enabled": enabled}
-
+    connected_platforms: list[str] = []
+    active_agents_count = 0
+    gw_state_file = HERMES_HOME / "gateway_state.json"
+    if gw_state_file.exists():
+        try:
+            raw = gw_state_file.read_bytes()[:MAX_OUTPUT_BYTES].decode("utf-8", "replace")
+            data = json.loads(raw) if raw.strip() else {}
+            if isinstance(data, dict):
+                active_agents_count = as_int(data.get("active_agents"), 0)
+                platforms = data.get("platforms")
+                if isinstance(platforms, dict):
+                    for p_name, p_info in platforms.items():
+                        if isinstance(p_info, dict) and p_info.get("state") == "connected":
+                            connected_platforms.append(clip(p_name, 32))
+        except (OSError, ValueError):
+            pass
+    return {
+        "serviceState": state,
+        "enabled": enabled,
+        "connectedPlatforms": sorted(connected_platforms),
+        "activeAgentsCount": active_agents_count,
+    }
 
 def collect_estop() -> dict:
     """Emergency-stop sentinel: $HERMES_HOME/ESTOP (JSON payload)."""
@@ -481,6 +527,8 @@ def collect(include_slow: bool, include_kanban: bool) -> dict:
         "id": PLUGIN_ID,
         "generatedAt": datetime.now().astimezone().isoformat(),
         "installed": hermes_bin is not None,
+        "isDefaultAgent": check_default_agent(),
+        "desktopAvailable": check_desktop_available(),
         "version": "",
         "model": "",
         "modelSource": "unknown",
@@ -491,7 +539,6 @@ def collect(include_slow: bool, include_kanban: bool) -> dict:
         "sessions": [],
         "errors": errors,
     }
-
     snapshot["gateway"] = collect_gateway()
     snapshot.update(collect_estop())
     snapshot["paused"] = bool(snapshot.get("paused"))

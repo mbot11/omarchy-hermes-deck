@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Stub omarchy for deck-act tests
+set -euo pipefail
+python3 -c 'import json,sys; print(json.dumps(["omarchy"] + sys.argv[1:]))' "$@" >"${DECK_ACT_RECORD:?DECK_ACT_RECORD not set}"

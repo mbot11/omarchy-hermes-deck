@@ -1,7 +1,7 @@
 ---
 name: omarchy-hermes-deck
 description: Operate, audit, troubleshoot, or extend the Hermes Deck Quattro plugin for Omarchy. Use for the io.github.mbot11.hermes-deck service/bar-widget pair, its deck-collect snapshot contract, deck-act action allowlist, the TUI modal, or marketplace validation. Do not use this skill to install Hermes itself, modify privileged bridges, or touch credential stores.
-version: 0.1.0
+version: 0.2.0
 author: mbot11
 license: MIT
 ---
@@ -31,8 +31,9 @@ python3 tests/test_collect.py        # from the repository checkout
 
 ## Snapshot contract (schemaVersion 2)
 
-`deck-collect` emits one JSON object: `installed`, `version`, `model`,
-`modelSource` (`config`|`cli`|`unknown`), `gateway` `{serviceState, enabled}`,
+`deck-collect` emits one JSON object: `installed`, `isDefaultAgent`,
+`desktopAvailable`, `version`, `model`, `modelSource` (`config`|`cli`|`unknown`),
+`gateway` `{serviceState, enabled, connectedPlatforms[], activeAgentsCount}`,
 `paused`/`reason`/`engagedAt` (ESTOP sentinel), `activity`
 `{working, lastMessageAt, secondsSinceLastMessage}`, `usage`
 `{today, week, month, byModelToday}`, `sessions[]`, `auth[]`,
@@ -48,7 +49,7 @@ Rules that must not regress:
 
 ## Actions
 
-`deck-act pause|resume|gateway-restart|new-session [prompt]|resume-session <id>|set-model <model>`.
+`deck-act pause|resume|gateway-restart|launch-desktop|set-default-agent|new-session [prompt]|resume-session <id>|set-model <model>`.
 Destructive actions are two-click confirmed in the panel. Add new actions
 by extending the allowlist in `deck-act` and the `runAction` call sites —
 never by passing shell strings.

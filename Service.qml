@@ -30,6 +30,10 @@ Item {
   property string lastError: ""
   property bool busy: false // a deck-act invocation is in flight
   readonly property bool installed: state.installed === true
+  readonly property bool isDefaultAgent: state.isDefaultAgent === true
+  readonly property bool desktopAvailable: state.desktopAvailable === true
+  readonly property var connectedPlatforms: state.gateway && Array.isArray(state.gateway.connectedPlatforms) ? state.gateway.connectedPlatforms : []
+  readonly property int activeAgentsCount: state.gateway ? Number(state.gateway.activeAgentsCount || 0) : 0
   readonly property bool working: state.activity !== null && state.activity.working === true
   readonly property bool paused: state.paused === true
   readonly property string gatewayState: state.gateway ? String(state.gateway.serviceState || "unknown") : "unknown"

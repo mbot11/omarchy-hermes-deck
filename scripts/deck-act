@@ -19,9 +19,13 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: deck-act pause|resume|gateway-restart|new-session [prompt]|resume-session <id>|set-model <model>" >&2
+  echo "usage: deck-act pause|resume|gateway-restart|launch-desktop|set-default-agent|new-session [prompt]|resume-session <id>|set-model <model>" >&2
   exit 64
 }
+
+OMARCHY_BIN="${OMARCHY_BIN:-/usr/bin/omarchy}"
+UWSM_APP="${UWSM_APP:-/usr/bin/uwsm-app}"
+HERMES_DESKTOP="${HERMES_DESKTOP:-/usr/bin/hermes-desktop}"
 
 # PATH first, then the standard user/system locations: the Omarchy shell's
 # PATH can omit ~/.local/bin, where Hermes self-installs.
@@ -58,13 +62,19 @@ case "$action" in
   gateway-restart)
     exec "$(hermes_bin)" gateway restart
     ;;
+  launch-desktop)
+    exec "$UWSM_APP" -- "$HERMES_DESKTOP"
+    ;;
+  set-default-agent)
+    exec "$OMARCHY_BIN" default agent hermes
+    ;;
   new-session)
     prompt=${1:-}
     if [[ -z $prompt ]]; then
-      launch_tui hermes --yolo
+      launch_tui env -u HERMES_SESSION_SOURCE hermes --yolo
     else
       # -z seeds the interactive TUI with a prompt; passed as one argv entry.
-      launch_tui hermes --yolo -z "$prompt"
+      launch_tui env -u HERMES_SESSION_SOURCE hermes --yolo -z "$prompt"
     fi
     ;;
   resume-session)

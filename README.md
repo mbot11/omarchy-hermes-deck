@@ -15,9 +15,9 @@ omarchy plugin add https://github.com/mbot11/omarchy-hermes-deck.git --enable
 | Area | Behavior |
 |---|---|
 | Bar glyph | State-colored: cyan pulse while the agent works, amber while paused, red when the gateway is down. Right-click toggles the TUI modal. |
-| Status | Gateway state, active model, configured auth providers, usage from the local state database. |
-| Actions | Pause/resume the agent (`hermes pause`/`resume` emergency stop), restart the gateway (`hermes gateway restart`), start a new chat; destructive actions need a confirming second click. |
-| Sessions | Recent conversations with title, age, workspace, and model; clicking one resumes it in the TUI. |
+| Status | Gateway state with connected messaging platforms (Telegram, Slack, etc.) and active background task count, active model, configured auth providers, and Omarchy default agent badge. |
+| Actions | Pause/resume the agent (`hermes pause`/`resume` emergency stop), restart the gateway (`hermes gateway restart`), start a new chat, open the native desktop app (`hermes-desktop`), or set as Omarchy default coding agent; destructive actions need a confirming second click. |
+| Sessions | Recent conversations with title, age, workspace, model, and origin badges (`[Desktop]`, `[Telegram]`, `[CLI]`); clicking one resumes it in the TUI. |
 | Usage | Today and 7-day token totals with Hermes' own cost estimates, broken down by model. |
 | Kanban | Read-only board summaries from `hermes kanban boards list --json`. |
 | TUI modal | Quake-style drop-down terminal running `hermes --tui` on a Hyprland special workspace; survives shell restarts. |
@@ -27,7 +27,7 @@ Desktop notifications fire when the agent finishes long work, when the emergency
 ## Requirements
 
 - Omarchy (Quattro shell); the plugin uses the `service` + `bar-widget` kinds
-- [Hermes Agent](https://hermes-agent.nousresearch.com) installed (`hermes` on PATH or in `~/.local/bin`); every surface degrades gracefully when Hermes is absent
+- [Hermes Agent](https://hermes-agent.nousresearch.com) installed (`omarchy default agent hermes` or `omarchy install ai hermes`); every surface degrades gracefully when Hermes is absent
 - Python 3 (stdlib only, no pip packages)
 
 ## Install

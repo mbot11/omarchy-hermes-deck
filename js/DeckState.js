@@ -6,11 +6,12 @@ function emptyState() {
     schemaVersion: 2,
     id: "hermes-deck",
     installed: false,
+    isDefaultAgent: false,
+    desktopAvailable: false,
     version: "",
     model: "",
     modelSource: "unknown",
-    gateway: { serviceState: "unknown", enabled: "unknown" },
-    paused: false,
+    gateway: { serviceState: "unknown", enabled: "unknown", connectedPlatforms: [], activeAgentsCount: 0 },
     reason: "",
     engagedAt: null,
     activity: { working: false, lastMessageAt: null, secondsSinceLastMessage: null },
@@ -33,8 +34,14 @@ function accept(raw) {
   var state = emptyState()
   for (var key in state)
     if (parsed[key] !== undefined) state[key] = parsed[key]
-  if (!state.gateway || typeof state.gateway !== "object") state.gateway = { serviceState: "unknown", enabled: "unknown" }
-  if (!state.activity || typeof state.activity !== "object")
+  if (!state.gateway || typeof state.gateway !== "object") {
+    state.gateway = { serviceState: "unknown", enabled: "unknown", connectedPlatforms: [], activeAgentsCount: 0 }
+  } else {
+    if (!Array.isArray(state.gateway.connectedPlatforms)) state.gateway.connectedPlatforms = []
+    state.gateway.activeAgentsCount = Number(state.gateway.activeAgentsCount || 0)
+  }
+  state.isDefaultAgent = Boolean(state.isDefaultAgent)
+  state.desktopAvailable = Boolean(state.desktopAvailable)
     state.activity = { working: false, lastMessageAt: null, secondsSinceLastMessage: null }
   if (!Array.isArray(state.sessions)) state.sessions = []
   if (!Array.isArray(state.auth)) state.auth = []
@@ -95,4 +102,14 @@ function shortenModel(model) {
   var slash = text.lastIndexOf("/")
   if (slash !== -1) text = text.substring(slash + 1)
   return text.length > 28 ? text.substring(0, 27) + "…" : text
+}
+
+function platformBadge(source) {
+  var s = String(source || "").toLowerCase()
+  if (s === "desktop") return "Desktop"
+  if (s === "telegram") return "Telegram"
+  if (s === "subagent") return "Subagent"
+  if (s === "kanban") return "Kanban"
+  if (s === "cli") return "CLI"
+  return s ? s : ""
 }

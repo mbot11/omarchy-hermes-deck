@@ -31,6 +31,9 @@ class ActTests(unittest.TestCase):
         env = dict(os.environ)
         env["DECK_ACT_RECORD"] = str(self.record)
         env["OMARCHY_LAUNCH_TUI"] = str(STUB_BIN / "omarchy-launch-tui")
+        env["OMARCHY_BIN"] = str(STUB_BIN / "omarchy")
+        env["UWSM_APP"] = str(STUB_BIN / "uwsm-app")
+        env["HERMES_DESKTOP"] = "/usr/bin/hermes-desktop"
         env["PATH"] = f"{STUB_BIN}:{env['PATH']}"
         self.env = env
 
@@ -118,6 +121,16 @@ class ActTests(unittest.TestCase):
         proc = self.run_act("gateway-restart")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(self.recorded_argv(), ["hermes", "gateway", "restart"])
+
+    def test_launch_desktop_exec_exact_command(self) -> None:
+        proc = self.run_act("launch-desktop")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.recorded_argv(), ["uwsm-app", "--", "/usr/bin/hermes-desktop"])
+
+    def test_set_default_agent_exec_exact_command(self) -> None:
+        proc = self.run_act("set-default-agent")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.recorded_argv(), ["omarchy", "default", "agent", "hermes"])
 
     def test_new_session_prompt_is_single_argv_entry(self) -> None:
         nasty = "write a file; $(rm -rf /) `id` | cat"

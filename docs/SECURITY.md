@@ -48,20 +48,22 @@ arguments; dynamic values are validated before use:
 Gateway control uses Hermes' own `hermes gateway restart`, not raw
 systemctl writes.
 
+Desktop launching uses `/usr/bin/uwsm-app -- /usr/bin/hermes-desktop` with
+fixed arguments, and default agent configuration uses
+`/usr/bin/omarchy default agent hermes` with fixed arguments.
 ## Binary resolution
 
 - System tools are pinned to absolute paths: `/usr/bin/python3`,
   `/usr/bin/systemctl`, `/usr/bin/hyprctl`, `/usr/bin/jq`,
   `/usr/bin/bash`, `/usr/bin/setsid`, `/usr/bin/uwsm-app`,
   `/usr/bin/xdg-terminal-exec`, `/usr/bin/omarchy-launch-tui`,
-  `/usr/bin/omarchy-notification-send`.
-- `hermes` resolves via `PATH` by design: Hermes is a user-level install
+  `/usr/bin/omarchy-notification-send`, `/usr/bin/omarchy`,
+  `/usr/bin/hermes-desktop`.
   (typically `~/.local/bin/hermes`) with no fixed system location. The
   test suite stubs it; production resolves it exactly as a user's shell
   would.
-- The only environment override is `OMARCHY_LAUNCH_TUI`, which exists for
-  the test suite to stub the launcher; same-user trust boundary either
-  way.
+- The test suite stubs launchers via `OMARCHY_LAUNCH_TUI`, `OMARCHY_BIN`,
+  and `UWSM_APP`; same-user trust boundary either way.
 
 ## Display
 
