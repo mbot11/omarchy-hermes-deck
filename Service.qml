@@ -52,6 +52,7 @@ Item {
   property bool wasPaused: false
   property string wasGatewayState: ""
 
+  signal panelToggleRequested()
   signal actionDone(string action, int exitCode)
 
   DeckAdapter {
@@ -251,6 +252,14 @@ Item {
 
     function status(): string {
       return modal.status()
+    }
+  }
+
+  IpcHandler {
+    target: root.pluginId
+
+    function toggle(): void {
+      root.panelToggleRequested()
     }
   }
 }

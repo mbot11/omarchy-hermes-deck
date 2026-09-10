@@ -124,6 +124,9 @@ BarWidget {
       if (root.working)
         pulseAnim.restart()
     }
+    function onPanelToggleRequested() {
+      root.toggle()
+    }
   }
 
   Loader {
