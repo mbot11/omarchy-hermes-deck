@@ -35,7 +35,11 @@ SECRET_PATTERNS: list[tuple[str, str]] = [
     ("github token", r"\bgh[pousr]_[A-Za-z0-9]{16,}\b"),
     ("github fine-grained pat", r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
     ("slack token", r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b"),
-    ("openai key", r"\bsk-[A-Za-z0-9]{20,}\b"),
+    # Covers the legacy `sk-…` and the current prefixed forms
+    # (`sk-proj-`, `sk-svcacct-`, `sk-admin-`). The prefix segment is explicit
+    # because a hyphen is not in the payload class.
+    ("openai key", r"\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}\b"),
+    ("openai key (legacy)", r"\bsk-[A-Za-z0-9]{20,}\b"),
     ("anthropic key", r"\bsk-ant-[A-Za-z0-9_-]{20,}\b"),
     ("openrouter key", r"\bsk-or-v1-[A-Za-z0-9]{32,}\b"),
     ("tavily key", r"\btvly-[A-Za-z0-9]{16,}\b"),
@@ -45,7 +49,12 @@ SECRET_PATTERNS: list[tuple[str, str]] = [
     ("generic bearer", r"\bBearer\s+[A-Za-z0-9._~+/-]{20,}=*\b"),
     ("telegram bot token", r"\b\d{8,12}:[A-Za-z0-9_-]{30,}\b"),
     ("jwt", r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
-    ("assigned secret", r"(?i)\b(?:api[_-]?key|secret|passwd|password|token|credential)\s*[:=]\s*[\"'][A-Za-z0-9_\-./+=]{16,}[\"']"),
+    ("assigned secret (quoted)", r"(?i)\b(?:api[_-]?key|secret|passwd|password|token|credential)\s*[:=]\s*[\"'][A-Za-z0-9_\-./+=]{16,}[\"']"),
+    # Unquoted: `OPENAI_API_KEY=sk-…`, `api_key: abc123…`, `export TOKEN=…`.
+    # Requires a recognisable secret shape or a long high-entropy run, so an
+    # ordinary short value next to the word "key" is not reported.
+    ("assigned secret (unquoted)", r"(?i)\b(?:api[_-]?key|secret|passwd|password|token|credential)\s*[:=]\s*(?:sk-|ghp_|gho_|ghs_|github_pat_|xox[abprs]-|AKIA|AIza|hf_|tvly-|sk_live_|sk_test_)[A-Za-z0-9_\-]{16,}"),
+    ("assigned secret (long value)", r"(?i)\b(?:api[_-]?key|secret|passwd|password|token|credential)\s*[:=]\s*[A-Za-z0-9_\-./+=]{32,}"),
 ]
 
 # ── machine identity that must not be published ──────────────────────────
@@ -160,6 +169,12 @@ def self_test() -> int:
         "aws access key": "k = \"" + "AKIA" + "IOSFODNN7EXAMPLE\"",
         "github token": "k = \"" + "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789\"",
         "openrouter key": "k = \"" + "sk-or-v1-" + "a" * 44 + "\"",
+        # A current-format OpenAI key, UNQUOTED, in an assignment. This shape was
+        # invisible: the prefix segment after `sk-` contains a hyphen, which the
+        # legacy pattern's class cannot match, and the quoted-assignment rule
+        # needs a quote. It sat in a .env and the gate said CLEAN.
+        "openai key": "OPENAI_API_KEY=" + "sk-pro" + "j-" + "AbCdEf1234567890AbCdEf1234567890",
+        "assigned secret (unquoted)": "api_key: " + "sk-" + "live_" + "AbCdEf1234567890AbCdEf1234567890",
         "private key block": "k = \"-----BEGIN OPENSSH " + _KEY + "-----\"",
         "ssh private key": "k = \"-----BEGIN OPENSSH " + _KEY + "-----\"",
         "absolute home path": "p = \"/home/realaccount/x\"",
@@ -214,7 +229,30 @@ def audit() -> int:
                 " this file was NOT inspected",
             ))
             continue
-        text = data.decode("utf-8", "replace")
+        # Decode with the RIGHT codec. A UTF-16 file is full of NULs, and
+        # decoding it as UTF-8 (with replacement) yields NUL-separated
+        # characters, so every pattern misses — the comment below names UTF-16 as
+        # the reason to scan NUL-bearing files, and the code then failed on
+        # exactly that case. BOM detection picks the codec; utf-8 stays the
+        # default for everything else.
+        codec = None
+        if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+            codec = "utf-16"                      # BOM present
+        elif data[:3] == b"\xef\xbb\xbf":
+            codec = "utf-8-sig"                   # UTF-8 with BOM
+        elif len(data) >= 8:
+            # No BOM. A UTF-16 stream without one is still recognisable: every
+            # other byte is NUL for ASCII content. Check both alignments.
+            # (`.encode("utf-16-le")` writes no BOM, so this case is real and was
+            # the one that still slipped through after BOM detection was added.)
+            head = data[:8192]
+            le_nul = head[1::2].count(0) / max(1, len(head[1::2]))
+            be_nul = head[0::2].count(0) / max(1, len(head[0::2]))
+            if le_nul > 0.4:
+                codec = "utf-16-le"
+            elif be_nul > 0.4:
+                codec = "utf-16-be"
+        text = data.decode(codec or "utf-8", "replace")
 
         # Resolve the identity list ONCE per file, not once per line. This was
         # called inside the per-line loop, spawning two `git config` subprocesses

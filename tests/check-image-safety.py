@@ -124,6 +124,14 @@ MAX_TOTAL_INFLATED_BYTES = 64 * 1024 * 1024
 # same file. Pin it explicitly, and treat the refusal as a finding.
 MAX_IMAGE_PIXELS = 89_478_485
 
+# Emitted when a text chunk cannot be fully inflated within the budget. It is a
+# SENTINEL, not content: an earlier version returned the literal string
+# "<truncated at the size cap>", which matches no detector, so a file whose
+# credential chunk sat after the budget was spent produced a CLEAN verdict. The
+# audit turns this marker into a finding instead. "Not fully scanned" must never
+# read the same as "clean".
+TRUNCATED_TEXT = "\x00<truncated at the size cap>\x00"
+
 
 def _inflate(blob: bytes, budget: int = MAX_INFLATED_BYTES) -> str:
     """Decompress a zlib stream from a PNG text chunk, with a hard size cap.
@@ -147,7 +155,7 @@ def _inflate(blob: bytes, budget: int = MAX_INFLATED_BYTES) -> str:
     # returned a full megabyte. That is how 40 chunks retained 42 MB against an
     # 8 MB budget. Return early instead of relying on the library's sentinel.
     if budget <= 0:
-        return "<truncated at the size cap>"
+        return TRUNCATED_TEXT
 
     try:
         engine = zlib.decompressobj()
@@ -157,8 +165,9 @@ def _inflate(blob: bytes, budget: int = MAX_INFLATED_BYTES) -> str:
                                      budget - len(out))
             if len(out) >= budget:
                 # Truncated rather than refused: the credential is almost always
-                # early in the text, and a partial read still gets scanned.
-                out += b"\n<truncated at the size cap>"
+                # early in the text, and a partial read still gets scanned. The
+                # sentinel makes the partial read VISIBLE to the audit.
+                out += TRUNCATED_TEXT.encode()
                 break
         return out.decode("utf-8", "replace")
     except (zlib.error, ValueError, TypeError):
@@ -431,6 +440,15 @@ def audit_image(path: Path, explain: bool = False) -> list[tuple[str, str, str]]
         # is exactly how the gate failed open before.
         if value.startswith("<undecodable"):
             findings.append((f"metadata:{key}", "unreadable compressed metadata", value[:110]))
+        elif TRUNCATED_TEXT in value:
+            # A partially-inflated chunk is reported, never passed. The sentinel
+            # used to be an ordinary-looking string that matched no detector, so a
+            # credential placed after the budget was spent produced CLEAN.
+            findings.append((
+                f"metadata:{key}", "metadata text not fully scanned",
+                f"{key}: exceeded the inflation budget, so this image's metadata was"
+                " only PARTIALLY scanned",
+            ))
         elif interesting and not PLACEHOLDER_VALUE.match(value):
             findings.append((f"metadata:{key}", "identifying metadata field", value[:110]))
 

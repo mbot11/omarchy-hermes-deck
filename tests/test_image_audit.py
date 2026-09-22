@@ -32,8 +32,8 @@ cis = _load()
 
 # The exact strings that were published-clean by mistake.
 BYPASS_CASES = [
-    ("secret beside 'providers'", "providers api_key = sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
-    ("secret beside 'telegram'", "telegram api_key = sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+    ("secret beside 'providers'", "providers api_key = " + "sk-pro" + "j" + "-AbCdEf1234567890AbCdEf"),
+    ("secret beside 'telegram'", "telegram api_key = " + "sk-pro" + "j" + "-ZzYyXx112233445566778899"),
     ("secret beside 'gateway'", "gateway password = hunter2hunter2hunter2"),
     ("secret beside 'quickshell'", "quickshell token = eyJhbGciOiJIUzI1NiIsInR5cCI6"),
     ("email beside 'ollama'", "ollama contact someone@example.com"),
@@ -48,7 +48,7 @@ VALUE_CONTAINS_NOISE_CASES = [
     ("api key containing 'ollama'", "api_key = ollama_cloud_prod_a1b2c3d4e5f6"),
     ("api key containing 'gateway'", "gateway api_key = gateway_prod_a1b2c3d4e5f6g7h8"),
     ("token containing 'telegram'", "token = telegram_bot_abcdefghijklmnop"),
-    ("secret containing our own name", "secret = hermes-deck-live-abcdefghijklmnop"),
+    ("secret containing our own name", "secret = hermes" + "-deck-live-abcdefghijklmnop"),
     ("password containing 'quickshell'", "password = quickshell-admin-abcdefghij"),
     ("token containing 'omarchy'", "token = omarchy_service_abcdefghijkl"),
 ]
@@ -449,7 +449,7 @@ class TestNonDecodableFiles(unittest.TestCase):
             with self.subTest(prefix):
                 with tempfile.TemporaryDirectory() as tmp:
                     path = Path(tmp) / "looks-like.png"
-                    path.write_bytes(prefix + b"api_key = sk-live-abcdefghijklmnop\n")
+                    path.write_bytes(prefix + b"api_key = " + b"sk-liv" + b"e-abcdefghijklmnop\n")
                     self.assertFalse(cis._looks_like_an_image(path),
                                      f"a text file starting with {prefix!r} passed")
                     findings = cis.audit_image(path)
@@ -629,6 +629,114 @@ class TestSecretScannerInvariants(unittest.TestCase):
         loop = body.split("for line_number, line in enumerate", 1)[1]
         self.assertNotIn("author_usernames()", loop,
                          "author_usernames() is back inside the per-line loop")
+
+
+class TestTruncationIsNeverClean(unittest.TestCase):
+    """An exhausted inflation budget must not read as CLEAN.
+
+    A credential whose text chunk sat AFTER the budget was spent was stored as
+    '<truncated at the size cap>' — a string matching no detector — so the audit
+    reported CLEAN on a fully decodable PNG carrying a live AWS key. The marker
+    is a sentinel now, and the audit turns it into a finding.
+    """
+
+    def _png(self, chunks):
+        import zlib, struct
+        def ch(t, d):
+            return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+        blob = b"\x89PNG\r\n\x1a\n"
+        for k, v in chunks:
+            blob += ch(b"zTXt", k + b"\x00\x00" + zlib.compress(v))
+        return blob
+
+    def test_exhausted_budget_yields_the_sentinel_not_a_plain_string(self):
+        self.assertIn(cis.TRUNCATED_TEXT, cis._inflate(b"x", 0))
+
+    def test_chunk_after_budget_is_visible_as_truncated(self):
+        orig_budget = cis.MAX_TOTAL_INFLATED_BYTES
+        cis.MAX_TOTAL_INFLATED_BYTES = 200_000
+        try:
+            blob = self._png([(b"p0", b"A" * 100_000), (b"p1", b"A" * 100_000),
+                              (b"note", b'aws = "' + b"AKIA" + b'IOSFODNN7EXAMPLE"')])
+            out = cis.png_text_chunks(blob)
+        finally:
+            cis.MAX_TOTAL_INFLATED_BYTES = orig_budget
+        self.assertIn("note", out, "the chunk must still be reported as present")
+        self.assertIn(cis.TRUNCATED_TEXT, out["note"],
+                      "a partially scanned chunk must be marked, not silently clean")
+
+    def test_truncated_metadata_becomes_a_finding(self):
+        """The audit must report a partially-scanned chunk rather than pass it."""
+        import tempfile, os
+        tmp = tempfile.mkdtemp()
+        try:
+            pth = os.path.join(tmp, "t.png")
+            blob = self._png([(b"p0", b"A" * 100_000), (b"p1", b"A" * 100_000),
+                              (b"note", b"x")])
+            # a minimal valid PNG so the decodability check passes
+            import zlib, struct
+            def ch(t, d):
+                return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+            w = h = 8
+            raw = b"".join(b"\x00" + bytes([i % 256 for i in range(w * 3)]) for i in range(h))
+            full = (b"\x89PNG\r\n\x1a\n"
+                    + ch(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+                    + blob[8:]
+                    + ch(b"IDAT", zlib.compress(raw, 6)) + ch(b"IEND", b""))
+            with open(pth, "wb") as fh:
+                fh.write(full)
+            orig_budget = cis.MAX_TOTAL_INFLATED_BYTES
+            cis.MAX_TOTAL_INFLATED_BYTES = 200_000
+            try:
+                findings = cis.audit_image(Path(pth))
+            finally:
+                cis.MAX_TOTAL_INFLATED_BYTES = orig_budget
+            labels = " ".join(l for _o, l, _d in findings)
+            self.assertIn("not fully scanned", labels,
+                          "a truncated metadata scan must be reported, not passed")
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+class TestSecretScanDecodesRealEncodings(unittest.TestCase):
+    """A NUL-bearing file must still be scanned in the right codec.
+
+    The scanner's own comment names a UTF-16 file as the reason to scan
+    NUL-containing blobs, and the code then decoded them as UTF-8 — which turns
+    UTF-16 into NUL-separated characters, so no pattern could match and a real
+    key sat in the tree un-reported.
+    """
+
+    def _scan(self, blob: bytes) -> str:
+        import subprocess, tempfile, os, shutil
+        d = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(d, "f.txt"), "wb") as fh:
+                fh.write(blob)
+            subprocess.run(["git", "init", "-q", "."], cwd=d, check=True)
+            subprocess.run(["git", "add", "-A"], cwd=d, check=True)
+            out = subprocess.run(
+                ["python3", str(HERE / "check-secrets.py"), "."],
+                cwd=d, capture_output=True, text=True)
+            return out.stdout
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def _key(self) -> bytes:
+        return ("OPENAI_API_KEY=" + "sk-pro" + "j-AbCdEf1234567890AbCdEf1234567890\n").encode()
+
+    def test_utf16_le_with_bom(self):
+        self.assertIn("SECRET", self._scan(self._key().decode().encode("utf-16")))
+
+    def test_utf16_le_without_bom(self):
+        self.assertIn("SECRET", self._scan(self._key().decode().encode("utf-16-le")))
+
+    def test_utf16_be_without_bom(self):
+        self.assertIn("SECRET", self._scan(self._key().decode().encode("utf-16-be")))
+
+    def test_plain_utf8_control(self):
+        self.assertIn("SECRET", self._scan(self._key()))
 
 
 if __name__ == "__main__":
