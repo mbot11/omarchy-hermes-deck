@@ -35,7 +35,7 @@ loosening it should be loud and discussed.
 | Images | no credential, identity or context finding in metadata or pixels, for **every published image** | `python3 tests/check-image-safety.py <image…>` | before any image is committed, CI |
 | Collector behaviour | 28/28 pass | `python3 tests/test_collect.py` | every edit |
 | Action dispatcher | 25/25 pass | `python3 tests/test_act.py` | every edit |
-| Image audit logic | 7/7 pass | `python3 tests/test_image_audit.py` | every edit |
+| Image audit logic | 11/11 pass | `python3 tests/test_image_audit.py` | every edit |
 | DeckState JS helpers | 9/9 pass | `node tests/test_deckstate.js` | every edit |
 | QML plain-text | zero unmarked `Text`/`Label` | `python3 tests/check-qml-plaintext.py .` | every edit |
 | Tree hygiene | no symlinks, one root manifest, root README+LICENSE | `bash tests/check-tree.sh .` | task end |
@@ -79,6 +79,14 @@ gate** on every tracked image:
 - **Pixels** — OCR with tesseract, then the same credential and identity shapes
   `check-secrets.py` applies to text, plus screenshot-specific ones (an absolute
   home path, a shell prompt with a cwd, a git remote URL, a private IP).
+
+A fourth hole was found the same way, by auditing a real capture of this
+machine's own desktop: a shell prompt prints `~/Work/...`, not
+`/home/<user>/Work`, so the absolute-path pattern missed the most common real
+leak of all — a terminal screenshot showing a working directory. The scan now
+matches `~/<something>` while deliberately not matching a bare `~` or a `~` used
+as an approximation in prose. That capture is the regression case: the audit
+reports a finding on it today and reported nothing before.
 
 **Known limitation, stated rather than hidden:** OCR accuracy is a function of
 resolution, and it fails in the direction that matters. At 900×300 the engine

@@ -100,6 +100,46 @@ class TestReadBounds(unittest.TestCase):
                       "image_metadata reads an unbounded file into memory")
 
 
+class TestTildePaths(unittest.TestCase):
+    """A shell prompt prints `~/`, not `/home/<user>/`.
+
+    The scanner originally only looked for absolute home paths, so the most
+    common real-world leak — a screenshot of a terminal whose prompt shows a
+    working directory — passed clean. Verified against a real capture where
+    OCR read `ls -la ~/.config/omarchy/plugins/...` and no finding fired.
+    """
+
+    TILDE_CASES = [
+        ("tilde work dir", "cd ~/Work/client-project"),
+        ("tilde config", "ls -la ~/.config/omarchy/plugins"),
+        ("tilde with subdir", "$ cat ~/.ssh/config"),
+        ("tilde dotfile", "vim ~/.bashrc"),
+    ]
+
+    def test_tilde_paths_are_reported(self):
+        for label, line in self.TILDE_CASES:
+            with self.subTest(label):
+                self.assertTrue(cis.scan_text(line, "t"),
+                                f"tilde path not reported: {line!r}")
+
+    def test_bare_tilde_is_not_a_finding(self):
+        """`cd ~` alone names no directory, so it discloses nothing."""
+        for line in ("cd ~", "cd ~ ", "~"):
+            with self.subTest(line):
+                self.assertFalse(cis.scan_text(line, "t"),
+                                 f"bare tilde reported: {line!r}")
+
+    def test_absolute_home_path_still_reported(self):
+        self.assertTrue(cis.scan_text("cd /home/realname/Work", "t"))
+
+    def test_a_lone_tilde_in_prose_is_not_a_finding(self):
+        """`~` is also a normal character. Only a path-like use is a finding."""
+        for line in ("about ~20 items", "roughly ~5 minutes", "a ~ b"):
+            with self.subTest(line):
+                self.assertFalse(cis.scan_text(line, "t"),
+                                 f"prose tilde reported: {line!r}")
+
+
 class TestLeakDetectors(unittest.TestCase):
     """The exemption is exercised through audit_image, not just scan_text."""
 

@@ -60,6 +60,12 @@ author_usernames = _secrets.author_usernames
 # must never reach a public listing, beyond the credential shapes.
 CONTEXT_PATTERNS: list[tuple[str, str]] = [
     ("absolute home path in pixels", r"/home/(?!u/|user/|username/)[a-z][a-z0-9_-]{2,}/"),
+    # A shell prompt prints `~/Work/...`, not `/home/<user>/Work`, so the
+    # absolute-path pattern above misses the most common real leak: a
+    # screenshot of a terminal whose prompt shows a working directory. This
+    # requires a path separator or a dot-directory after the tilde, so ordinary
+    # prose containing `~` (an approximation, a range) is not a finding.
+    ("tilde home path", r"~/(?![ \t])\S"),
     ("prompt with cwd", r"[$#]\s*(?:cd\s+)?(?:/|~)[\w./-]{3,}"),
     ("shell prompt line", r"^\s*[a-z][\w-]*@[\w.-]+\s*[:$#]"),
     ("git remote url", r"(?:git@|https://)[\w.-]*(?:github|gitlab)\.com[:/][\w./-]+"),
