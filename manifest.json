@@ -6,7 +6,10 @@
   "author": "mbot11",
   "license": "MIT",
   "description": "Live Hermes Agent companion for Omarchy: status, sessions, usage, kanban, controls, and a drop-down TUI.",
-  "kinds": ["service", "bar-widget"],
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
   "keepLoaded": true,
   "entryPoints": {
     "service": "Service.qml",
@@ -16,18 +19,28 @@
     "displayName": "Hermes Deck",
     "description": "Hermes Agent status, sessions, usage, kanban, and controls.",
     "category": "AI",
-    "aliases": ["hermes", "hermes-agent"],
+    "aliases": [
+      "hermes",
+      "hermes-agent"
+    ],
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {
       "showKanban": true,
-      "notify": true
+      "notify": true,
+      "showCron": true
     },
     "schema": [
       {
         "key": "showKanban",
         "type": "boolean",
         "label": "Show Kanban section",
+        "defaultValue": true
+      },
+      {
+        "key": "showCron",
+        "type": "boolean",
+        "label": "Show Cron section",
         "defaultValue": true
       },
       {

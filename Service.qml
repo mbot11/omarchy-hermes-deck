@@ -21,6 +21,9 @@ Item {
   property bool notificationsEnabled: true
   property bool panelOpen: false // set by the panel; drives cadence + kanban
   property bool kanbanEnabled: true
+  // Set by the panel from its setting. Gates --include-inventory, which costs
+  // a `hermes cron list` call.
+  property bool cronEnabled: true
   // Set by the panel's search box. Non-empty makes the slow refresh pass
   // --include-search, so the FTS5 query runs only while a search is active.
   property string searchQuery: ""
@@ -53,6 +56,9 @@ Item {
     "results": [],
     "totalHits": 0
   }
+  // Inventory arrives only when --include-inventory was passed, so this is an
+  // empty list for a fast snapshot rather than undefined.
+  readonly property var cron: Array.isArray(state.cron) ? state.cron : []
 
   // Notification transition trackers.
   property bool wasWorking: false
@@ -83,7 +89,7 @@ Item {
   function refreshSlow() {
     if (collectProc.running)
       return
-    collectProc.command = adapter.collectArgs(root.pluginDir, true, root.kanbanEnabled && root.panelOpen, root.searchQuery)
+    collectProc.command = adapter.collectArgs(root.pluginDir, true, root.kanbanEnabled && root.panelOpen, root.searchQuery, root.cronEnabled && root.panelOpen)
     collectProc.running = true
   }
 

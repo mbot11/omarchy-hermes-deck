@@ -442,6 +442,45 @@ class InventoryTests(unittest.TestCase):
         self.assertIn("cron", snap)
         self.assertEqual(snap["cron"], [])
 
+    def test_cron_parser_handles_real_shapes(self) -> None:
+        """The parser is text-based, so pin the shapes it accepts and rejects.
+
+        The columnar format could not be verified against a live multi-job
+        install (this machine has no jobs), so the accepted shapes are pinned
+        here and everything else must be dropped rather than guessed at.
+        """
+        import importlib.machinery
+        import importlib.util
+
+        loader = importlib.machinery.SourceFileLoader("deck_collect", str(COLLECT))
+        spec = importlib.util.spec_from_loader("deck_collect", loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        parse = module.parse_cron_list
+
+        table = (
+            "NAME              SCHEDULE     NEXT RUN   STATUS\n"
+            "nightly-backup    0 3 * * *    in 8h      active\n"
+            "weekly-digest     0 9 * * 1    in 3d      paused\n"
+        )
+        jobs = parse(table)
+        self.assertEqual([j["name"] for j in jobs], ["nightly-backup", "weekly-digest"])
+        self.assertFalse(jobs[0]["paused"])
+        self.assertTrue(jobs[1]["paused"])
+
+        named = parse("cleanup   @daily   in 4h   active\nhourly-ping   hourly   in 1h   active\n")
+        self.assertEqual([j["name"] for j in named], ["cleanup", "hourly-ping"])
+
+        # The live machine's actual output: an empty-state message, not a job.
+        self.assertEqual(parse(
+            "No scheduled jobs.\n"
+            "Create one with 'hermes cron create ...' or the /cron command in chat.\n"
+        ), [])
+
+        for junk in ("", "!!! ??? ###", "   \n\n  ", "oneword"):
+            with self.subTest(junk=junk):
+                self.assertEqual(parse(junk), [])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

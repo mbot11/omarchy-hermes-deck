@@ -40,10 +40,13 @@ Item {
   // Fixed collector invocation; slow fields are TTL-gated inside the script.
   // `search` is the user's FTS5 query; empty means the search section is not
   // requested at all, so the fast snapshot stays free of it.
-  function collectArgs(dir, slow, kanban, search) {
+  function collectArgs(dir, slow, kanban, search, inventory) {
     var argv = ["/usr/bin/python3", dir + "/scripts/deck-collect"]
     if (slow) argv.push("--include-slow")
     if (slow && kanban) argv.push("--include-kanban")
+    // Inventory rides the slow refresh only: it costs a `hermes cron list`
+    // call, and the fast snapshot must stay subprocess-free.
+    if (slow && inventory) argv.push("--include-inventory")
     if (search !== undefined && search !== null && String(search).trim() !== "")
       argv.push("--include-search", String(search).trim())
     return argv

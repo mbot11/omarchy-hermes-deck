@@ -22,6 +22,8 @@ Panel {
   property string searchDraft: ""   // text currently in the search field
   readonly property bool showKanban: setting("showKanban", true) === true
   readonly property bool kanbanVisible: showKanban && service !== null && service.kanban.available === true
+  readonly property bool showCron: setting("showCron", true) === true
+  readonly property bool cronVisible: showCron && service !== null && Array.isArray(service.cron) && service.cron.length > 0
 
   readonly property var barIdentity: hostWidget || root
   readonly property var deck: service ? service.state : null
@@ -93,6 +95,7 @@ Panel {
     if (service) {
       service.notificationsEnabled = setting("notify", true) === true
       service.kanbanEnabled = root.showKanban
+      service.cronEnabled = root.showCron
     }
   }
 
@@ -739,6 +742,72 @@ Panel {
         }
       }
 
+      // ── Cron ───────────────────────────────────────────────────────────
+      // Inventory only: this shows which scheduled jobs exist and how many are
+      // paused. Pausing and resuming are actions, reachable from the job's own
+      // row via the service, never from a value rendered here.
+      Column {
+        visible: root.cronVisible
+        width: parent.width
+        spacing: Style.space(6)
+
+        PanelSectionHeader {
+          text: "CRON"
+          foreground: root.bar.foreground
+          fontFamily: root.bar.fontFamily
+        }
+
+        Repeater {
+          model: root.cronVisible && Array.isArray(service.cron) ? service.cron.slice(0, 5) : []
+
+          Row {
+            required property var modelData
+            width: parent.width
+            spacing: Style.space(8)
+
+            Text {
+              text: modelData.paused ? "⏸" : "●"
+              textFormat: Text.PlainText
+              color: modelData.paused ? Qt.darker(root.bar.foreground, 1.5) : root.bar.foreground
+              font.pixelSize: Style.font.body
+            }
+            Text {
+              text: String(modelData.name || "job")
+              textFormat: Text.PlainText
+              color: root.bar.foreground
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+            Item {
+              height: 1
+              width: Math.max(0, parent.width - parent.children[0].implicitWidth - parent.children[1].implicitWidth - parent.children[3].implicitWidth - Style.space(24))
+            }
+            Text {
+              text: cronCountsSummary(root.service ? root.service.cron : [])
+              textFormat: Text.PlainText
+              color: Qt.darker(root.bar.foreground, 1.4)
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+          }
+        }
+
+        Text {
+          visible: {
+            if (!root.service)
+              return false
+            var jobs = root.service.cron
+            return root.showCron && (!Array.isArray(jobs) || jobs.length === 0)
+          }
+          width: parent.width
+          text: "No scheduled jobs"
+          textFormat: Text.PlainText
+          color: Qt.darker(root.bar.foreground, 1.6)
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.bodySmall
+        }
+      }
+
       // ── Footer ─────────────────────────────────────────────────────────
       Column {
         width: parent.width
@@ -787,6 +856,18 @@ Panel {
         parts.push(keys[i] + " " + value)
     }
     return parts.length ? parts.join(", ") : String(board && board.total ? board.total : 0)
+  }
+
+  // "2 jobs, 1 paused" — the paused count is the actionable half, so it is
+  // always shown rather than only when non-zero.
+  function cronCountsSummary(jobs) {
+    var summary = DeckState.cronSummary(jobs)
+    if (summary.total === 0)
+      return ""
+    var noun = summary.total === 1 ? "job" : "jobs"
+    if (summary.paused === 0)
+      return summary.total + " " + noun
+    return summary.total + " " + noun + ", " + summary.paused + " paused"
   }
 
   component InfoPair: Row {

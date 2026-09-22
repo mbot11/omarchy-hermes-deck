@@ -20,6 +20,7 @@ function emptyState() {
     auth: [],
     kanban: { available: false, boards: [] },
     search: { query: "", results: [], totalHits: 0 },
+    cron: [],
     errors: []
   }
 }
@@ -47,6 +48,26 @@ function accept(raw) {
   if (!Array.isArray(state.sessions)) state.sessions = []
   if (!Array.isArray(state.auth)) state.auth = []
   if (!state.kanban || typeof state.kanban !== "object") state.kanban = { available: false, boards: [] }
+  // Inventory arrives only when the collector was asked for it (opt-in flag),
+  // so a snapshot from a panel that did not request it must normalise to an
+  // empty list rather than leave `undefined` for the panel to iterate.
+  if (!Array.isArray(state.cron)) {
+    state.cron = []
+  } else {
+    var jobs = []
+    for (var j = 0; j < state.cron.length; j++) {
+      var job = state.cron[j]
+      if (!job || typeof job !== "object") continue
+      if (typeof job.name !== "string" || job.name === "") continue
+      jobs.push({
+        name: job.name,
+        schedule: typeof job.schedule === "string" ? job.schedule : "",
+        paused: job.paused === true,
+        running: job.running === true
+      })
+    }
+    state.cron = jobs
+  }
   if (!Array.isArray(state.errors)) state.errors = []
   return state
 }
@@ -134,4 +155,20 @@ function platformBadge(source) {
   if (s === "kanban") return "Kanban"
   if (s === "cli") return "CLI"
   return s ? s : ""
+}
+
+// What the panel's Cron header renders: how many jobs exist and how many are
+// paused. Counting here rather than in QML keeps the panel's bindings trivial
+// and makes the arithmetic testable outside a QML engine.
+function cronSummary(jobs) {
+  if (!Array.isArray(jobs)) return { total: 0, paused: 0 }
+  var total = 0
+  var paused = 0
+  for (var i = 0; i < jobs.length; i++) {
+    var job = jobs[i]
+    if (!job || typeof job !== "object") continue
+    total++
+    if (job.paused === true) paused++
+  }
+  return { total: total, paused: paused }
 }

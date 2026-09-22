@@ -605,12 +605,17 @@ def parse_cron_list(text: str) -> list:
             continue
         if fields[0].upper() in {"NAME", "ID", "JOB", "JOB_ID"}:
             continue  # header row
-        # Only the shape `0 3 * * *` (five cron fields) or a single token such
-        # as `hourly`/`daily` is accepted as the schedule column. Anything else
-        # means this is not a job row.
+        # Accept the standard five-field cron (`0 3 * * *`) or a named schedule
+        # (`@daily`, `hourly`). Anything else means this is not a job row.
+        #
+        # The exact columnar format is NOT verifiable on the machine this was
+        # written on: `hermes cron list` there prints "No scheduled jobs." So
+        # this accepts the two documented schedule shapes and drops everything
+        # else, which degrades to an empty list rather than to wrong data.
         schedule_len = 0
         for field in fields[1:]:
-            if re.fullmatch(r"[0-9*/,\-]+", field):
+            if re.fullmatch(r"[0-9*/,\-]+", field) or re.fullmatch(r"@[a-z]+", field.lower()) \
+               or field.lower() in {"hourly", "daily", "weekly", "monthly"}:
                 schedule_len += 1
             else:
                 break

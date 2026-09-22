@@ -37,6 +37,9 @@ jobs:
       - name: Image audit logic tests
         run: python3 tests/test_image_audit.py
 
+      - name: DeckState JS helper tests
+        run: node tests/test_deckstate.js
+
       - name: Collector behavioral tests
         run: python3 tests/test_collect.py
 
