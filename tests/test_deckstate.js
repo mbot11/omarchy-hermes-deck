@@ -191,5 +191,40 @@ check("the paused flag survives", cronDeck.cron[1].paused, true);
 check("the summary counts both and the paused one",
   deck.cronSummary(cronDeck.cron), { total: 2, paused: 1 });
 
+console.log("search results survive a fast tick");
+// Only the slow tick passes --include-search. The fast tick (every 5s while the
+// panel is open) reports query "" with 0 results, and accept() copied that over
+// the slow tick's answer — so the panel showed "0 conversation(s) matching" for
+// queries the collector answers with 17. Verified live before and after.
+const searched = deck.accept(JSON.stringify({
+  schemaVersion: 2, id: "hermes-deck",
+  search: { query: "gateway", results: [{ id: "a" }, { id: "b" }], totalHits: 17 },
+}), [], { query: "", results: [], totalHits: 0 });
+check("the slow tick's results land", searched.search.totalHits, 17);
+
+const afterFastTick = deck.accept(JSON.stringify({
+  schemaVersion: 2, id: "hermes-deck",
+  search: { query: "", results: [], totalHits: 0 },
+}), [], searched.search);
+check("a fast tick does not erase them", afterFastTick.search.totalHits, 17);
+check("the query survives too", afterFastTick.search.query, "gateway");
+check("the result rows survive", afterFastTick.search.results.length, 2);
+
+// A real answer of 0 hits is a FACT and must win over a stale result set.
+const zero = deck.accept(JSON.stringify({
+  schemaVersion: 2, id: "hermes-deck",
+  search: { query: "zzzznothing", results: [], totalHits: 0 },
+}), [], searched.search);
+check("an explicit 0-hit answer is not replaced by stale hits",
+  zero.search.totalHits, 0);
+check("and its query is kept", zero.search.query, "zzzznothing");
+
+// Clearing the search must not resurrect old results.
+const cleared = deck.accept(JSON.stringify({
+  schemaVersion: 2, id: "hermes-deck",
+  search: { query: "", results: [], totalHits: 0 },
+}), [], { query: "", results: [], totalHits: 0 });
+check("an empty previous search stays empty", cleared.search.totalHits, 0);
+
 console.log(`\n${failures === 0 ? "PASS" : "FAILED"} (${failures} failure(s))`);
 process.exit(failures === 0 ? 0 : 1);

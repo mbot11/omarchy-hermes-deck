@@ -28,6 +28,11 @@ Item {
   // --include-search, so the FTS5 query runs only while a search is active.
   property string searchQuery: ""
 
+  // A slow refresh requested while the collector was busy. Declared here, not
+  // on the function: a property referenced from a function must exist on the
+  // object, or the write is a no-op and the queue never drains.
+  property bool slowRefreshQueued: false
+
   readonly property string pluginId: "io.github.mbot11.hermes-deck"
   readonly property string modalIpcTarget: pluginId + ".modal"
 
@@ -87,8 +92,16 @@ Item {
   }
 
   function refreshSlow() {
-    if (collectProc.running)
+    // A refresh requested while the collector is busy is REMEMBERED, not
+    // dropped. The panel's Find button calls refreshSlow() on every search,
+    // but with the panel open the fast tick runs every 5 s, so the request
+    // almost always collided with a running collector and was silently
+    // discarded — the search then reported 0 hits for a query the collector
+    // answers with 17. Queue it and run it from onExited.
+    if (collectProc.running) {
+      root.slowRefreshQueued = true
       return
+    }
     collectProc.command = adapter.collectArgs(root.pluginDir, true, root.kanbanEnabled && root.panelOpen, root.searchQuery, root.cronEnabled && root.panelOpen)
     collectProc.running = true
   }
@@ -97,7 +110,7 @@ Item {
     try {
       // The previous cron list is handed in so a fast tick — which carries no
       // inventory — does not erase what the last slow tick found.
-      var next = DeckState.accept(text, root.cron)
+      var next = DeckState.accept(text, root.cron, root.searchResults)
       handleTransitions(next)
       root.state = next
       root.revision++
@@ -162,6 +175,12 @@ Item {
     onExited: function(exitCode) {
       if (exitCode !== 0)
         root.lastError = "Collector exited " + exitCode
+      // Run any refresh that arrived while this collection was in flight —
+      // otherwise a search submitted during a fast tick is lost.
+      if (root.slowRefreshQueued) {
+        root.slowRefreshQueued = false
+        Qt.callLater(root.refreshSlow)
+      }
     }
   }
 

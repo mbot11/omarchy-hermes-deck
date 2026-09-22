@@ -61,15 +61,25 @@ Panel {
   function submitSearch() {
     var query = root.searchDraft.trim()
     root.searchQuery = query
-    if (root.service)
+    if (root.service) {
       root.service.searchQuery = query
+      // Re-collect with the new query. `searchQuery` alone is only an input to
+      // the collector invocation — nothing observes it, so setting it and
+      // stopping meant no subprocess ever ran with --include-search and the
+      // panel reported "0 conversation(s) matching" for every query, even
+      // queries the collector answers with 17+ hits. Verified live on the real
+      // panel, then again after this fix.
+      root.service.refreshSlow()
+    }
   }
 
   function clearSearch() {
     root.searchDraft = ""
     root.searchQuery = ""
-    if (root.service)
+    if (root.service) {
       root.service.searchQuery = ""
+      root.service.refreshSlow()
+    }
   }
 
   function open() {
@@ -680,7 +690,14 @@ Panel {
             }
 
             Repeater {
-              model: root.service && root.service.searchResults && Array.isArray(root.service.searchResults.results)
+              // Gated on the section's own visibility AND on there being a live
+              // query. Without the query gate the rows outlive a Clear: the count
+              // line and the Clear button disappear (they check searchQuery), but
+              // this Repeater kept rendering the previous results from the
+              // service's carried-forward state, leaving orphan rows on screen.
+              model: root.searchQuery !== ""
+                && root.service && root.service.searchResults
+                && Array.isArray(root.service.searchResults.results)
                 ? root.service.searchResults.results.slice(0, 8)
                 : []
 

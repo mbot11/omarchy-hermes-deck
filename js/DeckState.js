@@ -32,7 +32,7 @@ function emptyState() {
 
 // Parse and validate one collector snapshot. Throws on malformed input so
 // the caller can keep its previous model (fail-muted).
-function accept(raw, previousCron) {
+function accept(raw, previousCron, previousSearch) {
   var parsed = JSON.parse(String(raw || ""))
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
     throw new Error("snapshot is not an object")
@@ -88,8 +88,32 @@ function accept(raw, previousCron) {
     }
     // An explicitly empty list is only meaningful when the source actually
     // reported one. An absent key falls back above.
-    state.cron = jobs
-  }
+      state.cron = jobs
+    }
+
+    // Search results must survive a fast tick, exactly like cron.
+    //
+    // Only the SLOW tick passes --include-search, so the fast tick (every 5 s
+    // while the panel is open) reports query "" with 0 results. `accept` copied
+    // that over the slow tick's answer within five seconds, so a search could
+    // never be seen: the panel rendered "0 conversation(s) matching" for queries
+    // the collector answers with 17. Verified by comparing both ticks directly.
+    //
+    // Carry the previous results forward whenever the payload carries no query.
+    // A query that IS present always wins, including a query with 0 hits — that
+    // is a real answer and must not be replaced by a stale one.
+    var incomingQuery = state.search && typeof state.search === "object"
+      ? String(state.search.query || "") : ""
+    if (incomingQuery === "" && previousSearch && typeof previousSearch === "object") {
+      var prevQuery = String(previousSearch.query || "")
+      if (prevQuery !== "") {
+        state.search = {
+          query: prevQuery,
+          results: Array.isArray(previousSearch.results) ? previousSearch.results : [],
+          totalHits: Number(previousSearch.totalHits || 0)
+        }
+      }
+    }
   if (!Array.isArray(state.errors)) state.errors = []
   return state
 }
