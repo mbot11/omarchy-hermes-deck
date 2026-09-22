@@ -67,6 +67,30 @@ omarchy-shell shell rescanPlugins
 omarchy restart shell
 ```
 
+## Removal
+
+```bash
+omarchy plugin disable io.github.mbot11.hermes-deck
+omarchy plugin remove io.github.mbot11.hermes-deck --yes
+```
+
+The plugin keeps no state outside its own directory. Two optional leftovers are
+deliberately not removed by the command above, since neither is the plugin's to
+delete:
+
+| Leftover | Path | Why it stays |
+|---|---|---|
+| Collector cache | `${XDG_STATE_HOME:-~/.local/state}/omarchy/hermes-deck/cache.json` | Holds only TTL-cached `hermes --version`, auth-provider names, and kanban board summaries. No secrets. Delete the directory if you want it gone. |
+| Hotkeys | `~/.config/hypr/bindings.lua` | The two `o.bind` lines from [Install](#install) are yours to keep or delete; the plugin never edits this file. Run `hyprctl reload` and check `hyprctl configerrors` after editing. |
+
+If you set Hermes as Omarchy's default coding agent through the panel, that
+choice is stored by Omarchy at `~/.config/omarchy/defaults/agent` and is not
+removed by uninstalling this plugin. Reset it with `omarchy default agent` and
+pick a different agent, or delete the file.
+
+Removing the plugin does not touch Hermes itself, its database, or its
+configuration.
+
 ## Attribution
 
 - Drop-down TUI modal pattern: bscott's MIT-licensed Scratch Terminal, via ElChacoVeloz/omarchy-hermes-modal.
