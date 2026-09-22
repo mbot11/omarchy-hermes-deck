@@ -51,7 +51,7 @@ SECRET_PATTERNS: list[tuple[str, str]] = [
 # ── machine identity that must not be published ──────────────────────────
 # Assembled for the same reason as the key markers above: this file is in the
 # tree it scans, so a literal it searches for would always match itself.
-_ROOT = "/root/"
+_ROOT = "/" + "root" + "/"
 IDENTITY_CHECKS: list[tuple[str, str]] = [
     # A real account name, not a placeholder: at least three characters and
     # not a single-letter or obviously synthetic fixture name.
@@ -128,6 +128,44 @@ def read_blob(path: str) -> bytes | None:
     return out.stdout
 
 
+def self_test() -> int:
+    """Prove the detector fires, so a clean run means clean rather than broken.
+
+    A scanner that silently matches nothing reports CLEAN forever, and the
+    failure is invisible because success and total dysfunction look identical
+    from the outside. This plants one sample per class in a temporary file and
+    asserts each is caught. It runs only under --self-test so normal use stays
+    a single pass over the tree.
+    """
+    samples = {
+        "aws access key": "k = \"" + "AKIA" + "IOSFODNN7EXAMPLE\"",
+        "github token": "k = \"" + "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789\"",
+        "openrouter key": "k = \"" + "sk-or-v1-" + "a" * 44 + "\"",
+        "private key block": "k = \"-----BEGIN OPENSSH " + _KEY + "-----\"",
+        "ssh private key": "k = \"-----BEGIN OPENSSH " + _KEY + "-----\"",
+        "absolute home path": "p = \"/home/realaccount/x\"",
+        "email address": "e = \"someone.real@proton.me\"",
+    }
+    failures = 0
+    for label, sample in samples.items():
+        hit = False
+        for kind, pattern in SECRET_PATTERNS + IDENTITY_CHECKS:
+            if kind == label and re.search(pattern, sample):
+                hit = True
+        if hit:
+            print(f"  detects {label}")
+        else:
+            failures += 1
+            print(f"  FAILS TO DETECT {label}")
+    if shannon_entropy("ghp_abcdefghijklmnopqrstuvwxyz0123456789") < 4.0:
+        failures += 1
+        print("  FAILS TO DETECT high-entropy literal")
+    else:
+        print("  detects high-entropy literal")
+    print(f"\nself-test: {len(samples) + 1 - failures}/{len(samples) + 1} detectors fired")
+    return 1 if failures else 0
+
+
 def audit() -> int:
     files = tracked_files()
     findings: list[tuple[str, str, int, str]] = []
@@ -185,4 +223,6 @@ def audit() -> int:
 
 
 if __name__ == "__main__":
+    if "--self-test" in sys.argv:
+        sys.exit(self_test())
     sys.exit(audit())
