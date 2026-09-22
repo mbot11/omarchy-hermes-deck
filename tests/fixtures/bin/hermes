@@ -36,5 +36,14 @@ EOF
 ]
 EOF
     ;;
+  sessions)
+    # pin/unpin/rename take a session id (and a title) and mutate the store.
+    # The real CLI accepts id prefixes, so the stub accepts any argv shape.
+    case "${2:-}" in
+      pin | unpin) exit 0 ;;
+      rename) [[ -n ${3:-} && -n ${4:-} ]] && exit 0; exit 64 ;;
+      *) exit 64 ;;
+    esac
+    ;;
   *) echo "stub hermes: unsupported call: $*" >&2; exit 64 ;;
 esac

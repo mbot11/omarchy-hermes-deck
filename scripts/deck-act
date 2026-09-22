@@ -19,7 +19,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: deck-act pause|resume|gateway-restart|launch-desktop|set-default-agent|new-session [prompt]|resume-session <id>|set-model <model>" >&2
+  echo "usage: deck-act pause|resume|gateway-restart|launch-desktop|set-default-agent|new-session [prompt]|resume-session <id>|set-model <model>|pin-session <id>|unpin-session <id>|rename-session <id> <title>" >&2
   exit 64
 }
 
@@ -47,6 +47,17 @@ launch_tui() {
   # Pinned to the packaged launcher; the env override exists so tests can
   # stub it. Same-user trust boundary either way.
   exec "${OMARCHY_LAUNCH_TUI:-/usr/bin/omarchy-launch-tui}" --app-id="$app_id" "$@"
+}
+
+# One gate for every session id the plugin accepts. Hermes ids look like
+# 20260904_204532_c3ca2e and uuid-shaped ids also occur; the leading
+# character may not be a dash or the value could parse as a CLI option.
+# Defined once so a new session action cannot ship with a weaker check.
+require_session_id() {
+  [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$ ]] || {
+    echo "deck-act: invalid session id" >&2
+    exit 65
+  }
 }
 
 (( $# >= 1 )) || usage
@@ -80,10 +91,7 @@ case "$action" in
   resume-session)
     (( $# == 1 )) || usage
     session_id=$1
-    [[ $session_id =~ ^[0-9a-zA-Z_-]{8,64}$ ]] || {
-      echo "deck-act: invalid session id" >&2
-      exit 65
-    }
+    require_session_id "$session_id"
     launch_tui hermes --tui --resume "$session_id"
     ;;
   set-model)
@@ -97,6 +105,37 @@ case "$action" in
       exit 65
     }
     exec "$(hermes_bin)" config set model.default "$model_id"
+    ;;
+  pin-session | unpin-session)
+    (( $# == 1 )) || usage
+    session_id=$1
+    require_session_id "$session_id"
+    # The same flag the Desktop sidebar's Pinned section reads, so a pin set
+    # from the bar is visible in Hermes Desktop without a second source.
+    verb=${action%-session}
+    exec "$(hermes_bin)" sessions "$verb" "$session_id"
+    ;;
+  rename-session)
+    (( $# == 2 )) || usage
+    session_id=$1
+    new_title=$2
+    require_session_id "$session_id"
+    # A title is free text the user typed. It travels as one argv entry, so
+    # only its length and emptiness need a gate; shell metacharacters in it
+    # are data, not syntax.
+    (( ${#new_title} > 0 )) || {
+      echo "deck-act: title must not be empty" >&2
+      exit 65
+    }
+    (( ${#new_title} <= 200 )) || {
+      echo "deck-act: title must be 200 characters or fewer" >&2
+      exit 65
+    }
+    [[ $new_title != *$'\n'* ]] || {
+      echo "deck-act: title must be one line" >&2
+      exit 65
+    }
+    exec "$(hermes_bin)" sessions rename "$session_id" "$new_title"
     ;;
   *)
     usage

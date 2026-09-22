@@ -151,6 +151,65 @@ class ActTests(unittest.TestCase):
         self.assertNotEqual(self.run_act("resume-session").returncode, 0)
         self.assertNotEqual(self.run_act("set-model").returncode, 0)
 
+    # ── session management (pin / unpin / rename) ────────────────────────
+    # Hermes stores the pin flag in the sessions table, and the same flag
+    # drives the Desktop sidebar's Pinned section, so a pin set here is
+    # visible there. These assert the exact argv and the argument gate.
+
+    def test_pin_session_exec_exact_command(self) -> None:
+        proc = self.run_act("pin-session", VALID_HERMES_ID)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.recorded_argv(), ["hermes", "sessions", "pin", VALID_HERMES_ID])
+
+    def test_unpin_session_exec_exact_command(self) -> None:
+        proc = self.run_act("unpin-session", VALID_UUID)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.recorded_argv(), ["hermes", "sessions", "unpin", VALID_UUID])
+
+    def test_rename_session_exec_exact_command(self) -> None:
+        proc = self.run_act("rename-session", VALID_HERMES_ID, "Gateway work")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            self.recorded_argv(),
+            ["hermes", "sessions", "rename", VALID_HERMES_ID, "Gateway work"],
+        )
+
+    def test_rename_session_title_is_one_argv_entry(self) -> None:
+        """A title with spaces and punctuation must stay a single argv entry.
+
+        Titles reach this from the panel, where the user typed them; they may
+        contain anything. Argument-vector exec is what keeps that safe.
+        """
+        title = "bug: parser drops 'x' & y > z; rm -rf /"
+        proc = self.run_act("rename-session", VALID_HERMES_ID, title)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        argv = self.recorded_argv()
+        self.assertEqual(len(argv), 5)
+        self.assertEqual(argv[4], title)
+
+    def test_rename_session_rejects_overlong_title(self) -> None:
+        proc = self.run_act("rename-session", VALID_HERMES_ID, "x" * 201)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertNotIn(b"x" * 201, proc.stdout)
+
+    def test_rename_session_rejects_empty_title(self) -> None:
+        self.assertNotEqual(self.run_act("rename-session", VALID_HERMES_ID, "").returncode, 0)
+
+    def test_pin_session_rejects_shell_metacharacters(self) -> None:
+        for bad in ("abc; rm -rf /", "abc$(whoami)", "abc|tee", "abc`id`", "abc&"):
+            with self.subTest(bad=bad):
+                self.assertNotEqual(self.run_act("pin-session", bad).returncode, 0)
+
+    def test_pin_session_rejects_short_and_option_like(self) -> None:
+        for bad in ("short", "-flag", "--all", ""):
+            with self.subTest(bad=bad):
+                self.assertNotEqual(self.run_act("pin-session", bad).returncode, 0)
+
+    def test_session_actions_require_an_argument(self) -> None:
+        for action in ("pin-session", "unpin-session", "rename-session"):
+            with self.subTest(action=action):
+                self.assertNotEqual(self.run_act(action).returncode, 0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
