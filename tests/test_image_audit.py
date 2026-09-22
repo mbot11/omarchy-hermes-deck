@@ -852,6 +852,42 @@ class TestGateRobustness(unittest.TestCase):
                             "no verdict was emitted")
 
 
+class TestBrokenPillowInstall(unittest.TestCase):
+    """The refusal must hold on a REAL broken install, not a mock.
+
+    `test_main_refuses_to_report_without_pillow` patches `cis._has_pillow`, so it
+    asserts that main() honours the flag — it cannot see whether `_has_pillow()`
+    actually DETECTS a broken install. A Pillow that imports but cannot load its
+    shared library raises OSError, not ImportError, and an `except ImportError`
+    would let the gate proceed into an audit that reads no metadata at all. That
+    is the documented case, so it is exercised here with a real shadow package.
+    """
+
+    def test_real_broken_install_is_detected_and_refused(self):
+        import os, subprocess, sys, tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            shadow = Path(tmp) / "shadow"
+            (shadow / "PIL").mkdir(parents=True)
+            # A PIL that raises OSError at import — the shape of a missing
+            # libjpeg.so, which is the real-world broken-install case.
+            (shadow / "PIL" / "__init__.py").write_text(
+                'raise OSError("libjpeg.so.9: cannot open shared object file")\n'
+            )
+            img = Path(tmp) / "shot.png"
+            img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"truncated")
+            env = dict(os.environ, PYTHONPATH=str(shadow))
+            out = subprocess.run([sys.executable, str(SCANNER), str(img)],
+                                 capture_output=True, text=True, env=env)
+            self.assertEqual(out.returncode, 2,
+                             "a broken Pillow must refuse, not audit blindly")
+            self.assertIn("refusing to report a verdict", out.stderr.lower(),
+                          f"the refusal must state it is refusing: {out.stderr!r}")
+            self.assertNotIn("CLEAN", out.stdout,
+                             "a broken install must never produce a CLEAN verdict")
+            self.assertNotIn("Traceback", out.stderr,
+                             "the detection must not crash out of the audit")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

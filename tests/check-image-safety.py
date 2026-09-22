@@ -145,8 +145,13 @@ def _inflate(blob: bytes, budget: int = MAX_INFLATED_BYTES) -> str:
     untrusted stream is a decompression bomb: 200 KB of highly compressible
     input inflates to 200 MB, and this runs on the publish gate, whose whole
     premise is that it terminates and is not a memory amplifier. Decompress
-    incrementally and stop at `budget` bytes (a per-image budget, so many
-    chunks cannot multiply it).
+    incrementally and stop at `budget` bytes. The budget is shared by every chunk
+    in one image and is consumed IN FILE ORDER, so it is a bound on work, not a
+    guarantee that later chunks are read: once it is exhausted, subsequent chunks
+    are reported as TRUNCATED_TEXT and the audit raises a finding. Earlier
+    comments claimed the total was simply "bounded", which was wrong — an
+    exhausted budget silently blinded the tail of the file and the placeholder
+    matched no detector, so the verdict was CLEAN.
     """
     import zlib
 
@@ -264,7 +269,27 @@ def _pin_pillow_limits() -> None:
                 " disables Pillow's decompression-bomb guard. Refusing to run."
             )
     except ImportError:
+        # No Pillow: main() refuses on its own with a clear message. Nothing to
+        # check here, and raising would pre-empt that better error.
         pass
+    except Exception as exc:  # noqa: BLE001
+        # A Pillow that EXISTS but cannot load — a missing libjpeg.so, a broken
+        # install — raises OSError, not ImportError. Catching only ImportError let
+        # that escape main() as a traceback: the gate crashed before it could
+        # refuse, so it emitted no verdict at all. A crash on the publish path is
+        # the one outcome worse than a refusal, because "no output" reads as
+        # "nothing to report". Refuse explicitly instead.
+        # Exit 2, not 1: 1 means "findings, do not publish", 2 means "could not
+        # audit". `raise SystemExit("message")` exits 1, which would be read as a
+        # finding rather than as the inability to audit. Print and exit 2.
+        print(
+            f"check-image-safety: Pillow is installed but unusable"
+            f" ({type(exc).__name__}: {exc}). Refusing to report a verdict."
+            "\n  Reinstall it: sudo pacman -S python-pillow"
+            "  (or: apt-get install python3-pil)",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
 
 
 def _has_pillow() -> bool:
@@ -345,6 +370,11 @@ def _looks_like_an_image(path: Path) -> bool:
     is not evidence of a decodable image, and a truncated PNG keeps its signature
     while being unreadable. So: ask the real decoder, and require it to load the
     pixel data rather than merely parse a header.
+
+    What this does NOT promise: `load()` decodes PIXELS only. It does not validate
+    the text chunks this module exists to read, and a file can pass here while its
+    metadata is only partially scanned — that case is reported separately, as a
+    "metadata text not fully scanned" finding, not silently accepted.
     """
     try:
         from PIL import Image
@@ -503,11 +533,11 @@ def audit_image(path: Path, explain: bool = False) -> list[tuple[str, str, str]]
         print("  WARNING: tesseract is not installed, so the pixels were NOT read."
               " Metadata only. Treat this result as partial.", file=sys.stderr)
 
-    # FAIL CLOSED on a format whose metadata this run cannot read. EXIF in a JPEG
-    # or WebP can only be reached through Pillow, so without it the audit saw no
-    # metadata at all and returned CLEAN on a file carrying a credential in
-    # EXIF — the exact fail-open the CI comment claimed was fixed. An
-    # unreadable-but-plausible artifact must be reported, never vouched for.
+    # FAIL CLOSED on an artifact that could not be decoded. The first half of this
+    # comment described the days when Pillow was optional ("without it the audit
+    # saw no metadata at all") — no longer reachable, since `main()` refuses with
+    # exit 2 before audit_image runs when Pillow is absent or broken. What remains
+    # true, and is the reason this check exists, is the second half:
     # An image we could not decode AT ALL must not be vouched for. A non-image
     # with an image extension (a mislabelled file, a truncated download, a
     # plaintext file someone renamed) yields no metadata and no OCR text, so the

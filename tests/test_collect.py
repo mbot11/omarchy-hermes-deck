@@ -721,11 +721,18 @@ class InventoryTests(unittest.TestCase):
     def test_job_name_containing_a_newline_cannot_inject_a_job(self) -> None:
         """A name with a newline renders a line that looks like a header.
 
-        `_coerce_job_text` (cron/jobs.py:447-449) only stringifies, so a newline
-        passes through and `cron_list`'s `Name:      ok\n  injected [paused]`
-        prints a two-space line carrying a badge. That fabricated a phantom job
-        and stole the real job's schedule. A job now requires both a name and a
-        schedule, which the injected shape cannot supply.
+        NOT `_coerce_job_text` (cron/jobs.py:447-449) — an earlier version of this
+        docstring blamed it, but it only stringifies a value that is already a
+        string. The name is DERIVED FROM THE PROMPT in `_normalize_job_record`
+        (cron/jobs.py:497-507, `label_source[:50]`), newlines included, so a
+        multi-line prompt puts its continuation lines verbatim into the Name
+        field. That is what renders a two-space line carrying a badge.
+
+        This test previously asserted only that `ok` was absent, which is a
+        different claim than its name: the injected shape also produced a
+        FABRICATED job called `evil` carrying the real job's schedule, and the
+        test passed anyway. It now asserts the structural truth — exactly one job,
+        none fabricated, complete fields — which is what the name promises.
         """
         parse = self._collect_module().parse_cron_list
         injected = ("  abc123 [active]\n"
@@ -733,13 +740,22 @@ class InventoryTests(unittest.TestCase):
                     "  injected [paused]\n"
                     "    Name: evil\n"
                     "    Schedule:  0 9 * * 1\n")
-        names = [j["name"] for j in parse(injected)]
-        self.assertNotIn("ok", names,
-                         "the header-only fragment became a job with no schedule")
-        # Every job that IS reported must be complete.
-        for job in parse(injected):
+        jobs = parse(injected)
+        names = [j["name"] for j in jobs]
+
+        self.assertEqual(len(jobs), 1,
+                         f"the injected block fabricated a job: {jobs!r}")
+        self.assertNotIn("evil", names, "an injected Name line became a job name")
+        self.assertNotIn("ok", names, "the header-only fragment became a job")
+        self.assertNotIn("injected", [n.strip() for n in names],
+                         "the injected header became a job name")
+        # and every job that IS reported must be complete
+        for job in jobs:
             self.assertTrue(job["name"] and job["schedule"],
                             f"an incomplete job was reported: {job!r}")
+        # the real job keeps its identity: the fake header did not start a new one
+        self.assertTrue(jobs[0]["name"].startswith("ok"),
+                        f"the real job's name was lost: {jobs[0]!r}")
 
     def test_round_trip_against_the_generated_fixture(self) -> None:
         """Parse the generated fixture and check every field is consistent.
