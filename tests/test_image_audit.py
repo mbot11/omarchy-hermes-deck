@@ -489,6 +489,70 @@ class TestNonDecodableFiles(unittest.TestCase):
                                     f"a real {fmt} was rejected")
 
 
+class TestDecompressionBombs(unittest.TestCase):
+    """A small file that decodes to an enormous raster must be REPORTED.
+
+    Pillow refuses an image over Image.MAX_IMAGE_PIXELS and raises
+    DecompressionBombError. That guard saved this gate from an 873 KB PNG that
+    decodes to 900 megapixels (measured at 880 MB of RSS with the guard
+    disabled) — but with the guard ENABLED the audit called `_looks_like_an_image`
+    False, logged nothing, and returned a CLEAN verdict on an image it never
+    examined. A bomb is not "not an image"; it is a finding.
+    """
+
+    def test_pixel_bomb_is_reported_not_silently_skipped(self):
+        import tempfile
+        from unittest import mock
+
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bomb.png"
+            Image.new("L", (64, 64), 0).save(path, "PNG")
+
+            # Simulate the refusal without building a real 900 MP file.
+            with mock.patch.object(
+                cis, "_decode_refusal",
+                return_value="image is too large to decode safely",
+            ):
+                findings = cis.audit_image(path)
+            labels = [f[1] for f in findings]
+            self.assertIn("not safe to decode", labels,
+                          f"a refused decode produced no finding: {findings!r}")
+
+    def test_limits_match_pillows_documented_values(self):
+        """The caps follow the reference implementation, not invented numbers."""
+        from PIL import ImageFile, PngImagePlugin
+
+        self.assertEqual(cis.MAX_INFLATED_BYTES, PngImagePlugin.MAX_TEXT_CHUNK,
+                         "per-chunk cap should match Pillow's MAX_TEXT_CHUNK")
+        self.assertEqual(cis.MAX_TOTAL_INFLATED_BYTES, PngImagePlugin.MAX_TEXT_MEMORY,
+                         "total cap should match Pillow's MAX_TEXT_MEMORY")
+
+    def test_refuses_when_the_pixel_guard_is_disabled(self):
+        """Pillow's docs warn against MAX_IMAGE_PIXELS = None; refuse instead."""
+        from PIL import Image
+
+        original = Image.MAX_IMAGE_PIXELS
+        try:
+            Image.MAX_IMAGE_PIXELS = None
+            with self.assertRaises(SystemExit):
+                cis._pin_pillow_limits()
+        finally:
+            Image.MAX_IMAGE_PIXELS = original
+
+    def test_decodes_normally_with_the_guard_intact(self):
+        import tempfile
+
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "fine.png"
+            Image.new("RGB", (64, 64)).save(path)
+            self.assertEqual(cis._decode_refusal(path), "",
+                             "a normal image must not be reported as refused")
+
+
 class TestLeakDetectors(unittest.TestCase):
     """The exemption is exercised through audit_image, not just scan_text."""
 

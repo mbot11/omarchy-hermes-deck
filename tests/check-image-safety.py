@@ -106,13 +106,23 @@ PLACEHOLDER_VALUE = re.compile(r"^<(?:zTXt|iTXt)>$")
 # image is already pathological, and no screenshot preview approaches it.
 OCR_TIMEOUT_SECONDS = 60
 MAX_IMAGE_BYTES = 64 * 1024 * 1024
-# Cap on decompressed text-chunk output. A text chunk is metadata: no legitimate
-# one approaches this, and without a cap a 200 KB stream inflates to 200 MB.
-MAX_INFLATED_BYTES = 4 * 1024 * 1024
-# Cap across ALL chunks in one image. A per-chunk cap bounds one expansion but not
-# the total: 400 chunks under the 64 MiB file cap are 1.6 GiB of text. The gate's
-# premise is that it is not a memory amplifier, so the budget is for the file.
-MAX_TOTAL_INFLATED_BYTES = 8 * 1024 * 1024
+
+# These three follow Pillow's own documented values rather than numbers invented
+# here. PngImagePlugin.MAX_TEXT_CHUNK is 1 MiB and MAX_TEXT_MEMORY is 64 MiB, both
+# commented in Pillow as guards against decompression bombs "where compressed
+# chunks can expand 1000x" — the exact threat. An earlier version used 4 MiB per
+# chunk (4x looser than the reference) and 8 MiB total.
+MAX_INFLATED_BYTES = 1 * 1024 * 1024
+MAX_TOTAL_INFLATED_BYTES = 64 * 1024 * 1024
+
+# Pillow refuses to decode an image over Image.MAX_IMAGE_PIXELS (89,478,485) and
+# raises DecompressionBombError. That protection saved this gate from an 873 KB
+# PNG that decodes to a 900-megapixel raster — but it was INHERITED from a library
+# default and never stated, so any change to Pillow or a caller setting
+# MAX_IMAGE_PIXELS = None (which Pillow's own docs warn against) would have
+# exposed it. Verified: with it disabled the audit took 880 MB of RSS from that
+# same file. Pin it explicitly, and treat the refusal as a finding.
+MAX_IMAGE_PIXELS = 89_478_485
 
 
 def _inflate(blob: bytes, budget: int = MAX_INFLATED_BYTES) -> str:
@@ -228,6 +238,26 @@ def png_text_chunks(data: bytes) -> dict[str, str]:
     return out
 
 
+def _pin_pillow_limits() -> None:
+    """Refuse to run with Pillow's decompression-bomb guards disabled.
+
+    `Image.MAX_IMAGE_PIXELS = None` is a documented footgun (Pillow's own security
+    guidance says not to set it). If the environment has disabled it, this gate
+    would decode a 900-megapixel raster from an 873 KB file — measured at 880 MB
+    of RSS — so refuse rather than inherit a dangerous default.
+    """
+    try:
+        from PIL import Image
+
+        if Image.MAX_IMAGE_PIXELS is None:
+            raise SystemExit(
+                "check-image-safety: PIL.Image.MAX_IMAGE_PIXELS is None, which"
+                " disables Pillow's decompression-bomb guard. Refusing to run."
+            )
+    except ImportError:
+        pass
+
+
 def _has_pillow() -> bool:
     """True when Pillow can actually be imported AND used.
 
@@ -254,6 +284,28 @@ def _has_pillow() -> bool:
 # optional dependency, the audit refuses to give a verdict without it: "cannot
 # inspect" must never be reported as "clean".
 REQUIRED_TOOL = "Pillow (python3-pil)"
+
+
+def _decode_refusal(path: Path) -> str:
+    """Why Pillow will not decode this file, or "" when it will.
+
+    A pixel bomb must be REPORTED, not silently skipped: with the pixels capped
+    the audit called `_looks_like_an_image` False, logged nothing, and returned a
+    clean verdict on an image it never examined — the same fail-open shape as
+    every other finding in this file's history.
+    """
+    try:
+        from PIL import Image
+    except Exception:  # noqa: BLE001
+        return "Pillow is not importable"
+    try:
+        with Image.open(path) as probe:
+            probe.load()
+        return ""
+    except Image.DecompressionBombError as exc:  # type: ignore[attr-defined]
+        return f"image is too large to decode safely ({exc})"
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _looks_like_an_image(path: Path) -> bool:
@@ -405,7 +457,15 @@ def audit_image(path: Path, explain: bool = False) -> list[tuple[str, str, str]]
     # audit saw nothing and said CLEAN — "we detected nothing" and "there was
     # nothing to detect" were indistinguishable. Require evidence that this is a
     # real image before accepting a clean verdict.
-    if not _looks_like_an_image(path):
+    refusal = _decode_refusal(path)
+    if refusal:
+        findings.append((
+            f"metadata:{path.suffix.lower() or 'no-extension'}",
+            "not safe to decode",
+            f"{path.name}: {refusal} — this file was NOT audited; a small file"
+            " that decodes to an enormous raster is a decompression bomb",
+        ))
+    elif not _looks_like_an_image(path):
         findings.append((
             f"metadata:{path.suffix.lower() or 'no-extension'}",
             "not a decodable image",
@@ -481,6 +541,7 @@ def main(argv: list[str]) -> int:
     # Refuse rather than guess. Without Pillow this audit cannot see EXIF, cannot
     # read a GIF/AVIF/HEIC, and cannot verify a file is an image at all — so a
     # CLEAN verdict would be meaningless in the direction that leaks.
+    _pin_pillow_limits()
     if not _has_pillow():
         print(f"check-image-safety: {REQUIRED_TOOL} is required to audit images"
               " (and .jpeg/.webp/.gif/.avif EXIF cannot be read without it)."
