@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import json
 import sys
 from pathlib import Path
 
@@ -119,27 +120,54 @@ JOBS = [
 
 
 def render(hermes_src: Path, show_all: bool) -> str:
-    """Render `hermes cron list` output by calling the CLI's own functions."""
+    """Render `hermes cron list` by CALLING it, in a throwaway store.
+
+    This function used to reimplement cron_list's loop — calling its helpers
+    `_print_banner`/`_job_rows` but iterating the jobs itself. That skipped
+    `cron.jobs.list_jobs` -> `_normalize_job_record`, which is where a null id is
+    coerced to the literal "unknown" (cron/jobs.py:495). The result was a fixture
+    containing `  None [active]` where the real CLI prints `  unknown [active]`,
+    and a `--check` gate that compared the fixture against the same
+    reimplementation — so it reported "matches the CLI" while the fixture did not
+    match. A provenance check that never executes the real code cannot detect
+    drift, which is the only thing it exists for.
+
+    So: write a real jobs.json into a temporary HERMES_HOME, point the cron store
+    at it, and call `cron_list` itself. Then the fixture IS the CLI's output.
+    """
+    import os
+    import tempfile
+
     sys.path.insert(0, str(hermes_src))
     import hermes_cli.cron as cron_cli  # noqa: PLC0415
-    from cron.jobs import effective_job_state  # noqa: PLC0415
+    from cron import jobs as cron_jobs  # noqa: PLC0415
 
-    # `list_jobs(include_disabled=False)` drops enabled=False records, which is
-    # exactly what bare `hermes cron list` does — reproduce it so the difference
-    # between the two modes is visible rather than assumed.
-    jobs = [j for j in JOBS if j.get("enabled", True) or show_all]
+    tmp = tempfile.mkdtemp(prefix="cron-fixture-")
+    cron_dir = Path(tmp) / "cron"
+    cron_dir.mkdir(parents=True, exist_ok=True)
+    (cron_dir / "jobs.json").write_text(
+        json.dumps({"jobs": [dict(job) for job in JOBS]}), encoding="utf-8"
+    )
+
+    original = cron_jobs._IMPORT_STORE
+    cron_jobs.CRON_DIR = cron_dir
+    cron_jobs.JOBS_FILE = cron_dir / "jobs.json"
+    cron_jobs.OUTPUT_DIR = cron_dir / "output"
+    cron_jobs._IMPORT_STORE = cron_jobs._CronStorePaths(
+        cron_jobs.CRON_DIR, cron_jobs.JOBS_FILE, cron_jobs.OUTPUT_DIR
+    )
 
     buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        cron_cli._print_banner("Scheduled Jobs")
-        for job in jobs:
-            badge = cron_cli._STATE_BADGES.get(effective_job_state(job)) or (
-                ("[active]", None) if job.get("enabled", True) else ("[disabled]", None)
-            )
-            print(f"  {job.get('id', '?')} {badge[0]}")
-            for label, value in cron_cli._job_rows(job):
-                print(f"    {label + ':':<11}{value}")
-            print()
+    try:
+        # No ANSI: color is suppressed when stdout is not a tty, which is the
+        # case here because we redirect it.
+        with contextlib.redirect_stdout(buf):
+            cron_cli.cron_list(show_all=show_all)
+    finally:
+        cron_jobs._IMPORT_STORE = original
+        cron_jobs.CRON_DIR = original.cron_dir
+        cron_jobs.JOBS_FILE = original.jobs_file
+        cron_jobs.OUTPUT_DIR = original.output_dir
     return buf.getvalue()
 
 

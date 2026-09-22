@@ -233,6 +233,15 @@ def _has_pillow() -> bool:
     return True
 
 
+def _png_chunk(kind: bytes, data: bytes) -> bytes:
+    """One PNG chunk, correctly length-prefixed (see _png_with_chunk)."""
+    import struct
+    import zlib
+
+    return (struct.pack(">I", len(data)) + kind + data
+            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF))
+
+
 def _png_with_chunk(kind: bytes, body: bytes) -> bytes:
     """A minimal valid PNG carrying one extra text chunk.
 
@@ -339,6 +348,44 @@ class TestInflateIsBounded(unittest.TestCase):
         self.assertLessEqual(len(out), cis.MAX_INFLATED_BYTES + 100,
                              "the inflate result was not capped")
 
+    def test_cap_value_is_independently_pinned(self):
+        """Assert a literal, not the constant it bounds.
+
+        The earlier assertion was `len(out) <= cis.MAX_INFLATED_BYTES + 100`, so
+        multiplying the constant by 1000 left the suite green — the test passed
+        for a reason unrelated to the number it named.
+        """
+        import zlib
+
+        bomb = zlib.compress(b"\x00" * (64 * 1024 * 1024), 9)
+        out = cis._inflate(bomb)
+        self.assertLessEqual(len(out), 5 * 1024 * 1024,
+                             "the inflate cap must stay in single-digit MiB")
+        self.assertGreaterEqual(len(out), 1 * 1024 * 1024,
+                                "the cap must not be so small that real text is lost")
+
+    def test_total_budget_bounds_many_chunks(self):
+        """A per-chunk cap does not bound the total.
+
+        400 valid 4 MiB chunks is 1.6 GiB of text from a ~1.6 MB file, well under
+        MAX_IMAGE_BYTES. The budget is per IMAGE, so the total is bounded too.
+        """
+        import struct
+        import zlib
+
+        payload = zlib.compress(b"\x00" * (1024 * 1024), 9)
+        parts = b"".join(
+            _png_chunk(b"zTXt", f"K{i}".encode() + b"\x00\x00" + payload)
+            for i in range(40)
+        )
+        base = _png_with_chunk(b"tEXt", b"seed\x00seed")
+        off = base.index(b"IDAT") - 4
+        data = base[:off] + parts + base[off:]
+        chunks = cis.png_text_chunks(data)
+        total = sum(len(v) for v in chunks.values())
+        self.assertLessEqual(total, cis.MAX_TOTAL_INFLATED_BYTES + 200_000,
+                             f"{total:,} bytes retained across chunks")
+
     def test_small_payload_is_not_truncated(self):
         import zlib
 
@@ -346,83 +393,100 @@ class TestInflateIsBounded(unittest.TestCase):
         self.assertIn("sk-live-abc", out)
 
 
-class TestFailClosedOnUnreadableFormats(unittest.TestCase):
-    """A format this run cannot read must not produce a CLEAN verdict.
+class TestPillowIsRequired(unittest.TestCase):
+    """Pillow is a hard requirement, because making it optional failed open.
 
-    EXIF in a JPEG or WebP is reachable only through Pillow. Without it the audit
-    saw no metadata and returned CLEAN on a file carrying a credential in EXIF —
-    the fail-open that a CI comment claimed was fixed.
+    Five separate holes were verified when it was optional: EXIF in a JPEG/WebP
+    was invisible (and the rule was keyed on the SUFFIX, so a JPEG named .png
+    slipped through), a PNG eXIf chunk was invisible, a GIF was invisible and
+    deliberately excluded from the suffix set, OCR-blind AVIF/HEIC produced no
+    metadata and no text with no warning, and a Pillow whose shared libraries
+    failed to load raised out of the audit. Patching five holes in an optional
+    dependency is worse than requiring it: "cannot inspect" must never be
+    reported as "clean".
     """
 
-    def test_pillow_only_suffixes_are_declared(self):
-        for suffix in (".jpg", ".jpeg", ".webp", ".tif", ".tiff"):
-            self.assertIn(suffix, cis.PILLOW_ONLY_SUFFIXES)
+    def test_pillow_probe_survives_a_broken_install(self):
+        """A Pillow that raises anything at import is still 'not available'."""
+        from unittest import mock
 
-    def test_unreadable_format_is_reported_when_pillow_is_absent(self):
+        for exc in (ImportError("no module"), OSError("libjpeg.so.9: cannot open")):
+            with self.subTest(type(exc).__name__):
+                with mock.patch("builtins.__import__", side_effect=exc):
+                    self.assertFalse(cis._has_pillow(),
+                                     f"{type(exc).__name__} escaped the probe")
+
+    def test_main_refuses_to_report_without_pillow(self):
         import tempfile
         from unittest import mock
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "shot.jpg"
-            path.write_bytes(b"\xff\xd8\xff\xe0not a real jpeg")
+            path.write_bytes(b"\xff\xd8\xff\xe0not an image")
             with mock.patch.object(cis, "_has_pillow", return_value=False):
-                findings = cis.audit_image(path)
-            labels = [f[1] for f in findings]
-            self.assertIn("unreadable image format (Pillow missing)", labels,
-                          f"an unreadable format produced no finding: {findings!r}")
+                code = cis.main(["check-image-safety.py", str(path)])
+            self.assertEqual(code, 2,
+                             "without Pillow the audit must refuse, not report")
+
+    def test_required_tool_is_named(self):
+        self.assertIn("Pillow", cis.REQUIRED_TOOL)
 
 
-class TestNonImageIsNotVouchedFor(unittest.TestCase):
-    """A file that is not a readable image must not produce CLEAN.
+class TestNonDecodableFiles(unittest.TestCase):
+    """A file Pillow cannot decode must be reported, never vouched for."""
 
-    A mislabelled file (plaintext renamed .png, truncated download, a non-image
-    with an image extension) yields no metadata and no OCR text, so the audit saw
-    nothing and said CLEAN — "detected nothing" and "nothing to detect" were
-    indistinguishable, and a credential sitting in that file was vouched for.
-    """
+    def test_prefix_magic_is_not_enough(self):
+        """A 2-byte prefix used to be accepted, so `BMW review notes` passed.
 
-    def test_plaintext_with_an_image_name_is_reported(self):
+        The old check matched `BM`/`RIFF`/`GIF89a`/`II*\0` as a PREFIX, so a
+        text file starting with those bytes was treated as an image and its
+        credential reported CLEAN.
+        """
         import tempfile
 
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "not-really.png"
-            path.write_text("api_key = " + "sk-live-" + "abcdefghijklmnop\n")
-            findings = cis.audit_image(path)
-            labels = [f[1] for f in findings]
-            self.assertIn("not a decodable image", labels,
-                          f"a non-image was quietly accepted: {findings!r}")
+        for prefix in (b"BMW review notes\n", b"RIFF notes\n",
+                       b"GIF89a notes\n", b"II*\x00 notes\n"):
+            with self.subTest(prefix):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "looks-like.png"
+                    path.write_bytes(prefix + b"api_key = sk-live-abcdefghijklmnop\n")
+                    self.assertFalse(cis._looks_like_an_image(path),
+                                     f"a text file starting with {prefix!r} passed")
+                    findings = cis.audit_image(path)
+                    self.assertIn("not a decodable image", [f[1] for f in findings],
+                                  f"no finding for {prefix!r}")
 
-    def test_magic_bytes_identify_real_formats(self):
+    def test_truncated_png_is_not_a_decodable_image(self):
+        """A truncated PNG keeps its signature but cannot be loaded."""
         import io
-        import struct
         import tempfile
-        import zlib
 
         from PIL import Image
 
         with tempfile.TemporaryDirectory() as tmp:
-            png = Path(tmp) / "real.png"
-            Image.new("RGB", (8, 8)).save(png)
-            self.assertTrue(cis._looks_like_an_image(png))
+            buf = io.BytesIO()
+            Image.new("RGB", (40, 40)).save(buf, "PNG")
+            raw = buf.getvalue()
+            for fraction in (0.5, 0.25):
+                with self.subTest(fraction):
+                    path = Path(tmp) / f"trunc{int(fraction*100)}.png"
+                    path.write_bytes(raw[: int(len(raw) * fraction)])
+                    self.assertFalse(cis._looks_like_an_image(path),
+                                     "a truncated PNG passed as an image")
 
-            jpg = Path(tmp) / "real.jpg"
-            Image.new("RGB", (8, 8)).save(jpg, "JPEG")
-            self.assertTrue(cis._looks_like_an_image(jpg))
-
-            txt = Path(tmp) / "fake.png"
-            txt.write_text("not an image at all")
-            self.assertFalse(cis._looks_like_an_image(txt))
-
-    def test_empty_file_is_not_an_image(self):
+    def test_real_formats_are_accepted(self):
+        """No false positives: every format Pillow can write must pass."""
         import tempfile
 
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "empty.png"
-            path.write_bytes(b"")
-            self.assertFalse(cis._looks_like_an_image(path))
+        from PIL import Image
 
-    def test_missing_file_is_not_an_image(self):
-        self.assertFalse(cis._looks_like_an_image(Path("/nonexistent/x.png")))
+        with tempfile.TemporaryDirectory() as tmp:
+            for fmt in ("PNG", "JPEG", "WEBP", "GIF", "TIFF", "BMP"):
+                with self.subTest(fmt):
+                    path = Path(tmp) / f"real.{fmt.lower()}"
+                    Image.new("RGB", (20, 20)).save(path, fmt)
+                    self.assertTrue(cis._looks_like_an_image(path),
+                                    f"a real {fmt} was rejected")
 
 
 class TestLeakDetectors(unittest.TestCase):

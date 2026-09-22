@@ -109,9 +109,13 @@ MAX_IMAGE_BYTES = 64 * 1024 * 1024
 # Cap on decompressed text-chunk output. A text chunk is metadata: no legitimate
 # one approaches this, and without a cap a 200 KB stream inflates to 200 MB.
 MAX_INFLATED_BYTES = 4 * 1024 * 1024
+# Cap across ALL chunks in one image. A per-chunk cap bounds one expansion but not
+# the total: 400 chunks under the 64 MiB file cap are 1.6 GiB of text. The gate's
+# premise is that it is not a memory amplifier, so the budget is for the file.
+MAX_TOTAL_INFLATED_BYTES = 8 * 1024 * 1024
 
 
-def _inflate(blob: bytes) -> str:
+def _inflate(blob: bytes, budget: int = MAX_INFLATED_BYTES) -> str:
     """Decompress a zlib stream from a PNG text chunk, with a hard size cap.
 
     Stdlib rather than Pillow, so a compressed chunk is readable even where
@@ -123,17 +127,25 @@ def _inflate(blob: bytes) -> str:
     untrusted stream is a decompression bomb: 200 KB of highly compressible
     input inflates to 200 MB, and this runs on the publish gate, whose whole
     premise is that it terminates and is not a memory amplifier. Decompress
-    incrementally and stop at MAX_INFLATED_BYTES.
+    incrementally and stop at `budget` bytes (a per-image budget, so many
+    chunks cannot multiply it).
     """
     import zlib
+
+    # An exhausted budget must produce NOTHING, and `decompress(data, 0)` does not
+    # do that — zlib documents max_length=0 as "unlimited", so a zero budget
+    # returned a full megabyte. That is how 40 chunks retained 42 MB against an
+    # 8 MB budget. Return early instead of relying on the library's sentinel.
+    if budget <= 0:
+        return "<truncated at the size cap>"
 
     try:
         engine = zlib.decompressobj()
         out = bytearray()
         for offset in range(0, len(blob), 65536):
             out += engine.decompress(blob[offset : offset + 65536],
-                                     MAX_INFLATED_BYTES - len(out))
-            if len(out) >= MAX_INFLATED_BYTES:
+                                     budget - len(out))
+            if len(out) >= budget:
                 # Truncated rather than refused: the credential is almost always
                 # early in the text, and a partial read still gets scanned.
                 out += b"\n<truncated at the size cap>"
@@ -155,6 +167,7 @@ def png_text_chunks(data: bytes) -> dict[str, str]:
     if data[:8] != b"\x89PNG\r\n\x1a\n":
         return out
     offset = 8
+    budget = MAX_TOTAL_INFLATED_BYTES
     while offset + 8 <= len(data):
         length = struct.unpack(">I", data[offset : offset + 4])[0]
         kind = data[offset + 4 : offset + 8]
@@ -166,7 +179,14 @@ def png_text_chunks(data: bytes) -> dict[str, str]:
             # zTXt = keyword \x00 compression_method \x00 deflate(data)
             key, _, rest = body.partition(b"\x00")
             _, _, compressed = rest.partition(b"\x00")
-            out[key.decode("latin-1", "replace")] = _inflate(compressed)
+            key_name = key.decode("latin-1", "replace")
+            text = _inflate(compressed, budget)
+            # Charge by the text this chunk actually produced. Reading it back out
+            # of `out` measured the wrong thing: a repeated keyword overwrote the
+            # previous entry, so the subtraction saw only the newest value and the
+            # budget never fell — 40 chunks retained 42 MB against an 8 MB budget.
+            budget = max(0, budget - len(text))
+            out[key_name] = text
         elif kind == b"iTXt":
             # iTXt. A short or ambiguous chunk is reported as undecodable rather
             # than guessed at: trusting a split that "looks right" is how a
@@ -194,7 +214,9 @@ def png_text_chunks(data: bytes) -> dict[str, str]:
                     text = parts[2]
                     if comp_flag != 0:
                         if comp_method == 0:
-                            out[key_text] = _inflate(text)
+                            decoded = _inflate(text, budget)
+                            budget = max(0, budget - len(decoded))
+                            out[key_text] = decoded
                         else:
                             # Only deflate is defined for PNG text chunks.
                             out[key_text] = "<undecodable compressed text chunk>"
@@ -207,57 +229,51 @@ def png_text_chunks(data: bytes) -> dict[str, str]:
 
 
 def _has_pillow() -> bool:
-    """True when Pillow can be imported, i.e. EXIF and non-PNG formats are readable."""
+    """True when Pillow can actually be imported AND used.
+
+    Catches Exception rather than ImportError: a Pillow whose shared libraries
+    will not load raises OSError, and that was escaping the audit as a traceback
+    instead of being reported as a missing tool.
+    """
     try:
         import PIL  # noqa: F401
-    except ImportError:
+        from PIL import Image  # noqa: F401
+
+        return True
+    except Exception:  # noqa: BLE001
         return False
-    return True
 
 
-# Formats whose metadata/EXIF can ONLY be read with Pillow. A PNG's text chunks
-# are read with the stdlib, so a PNG is fully covered without it.
-PILLOW_ONLY_SUFFIXES = {".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".heic", ".avif", ".bmp"}
-
-
-# Magic bytes for the formats this audit accepts. A file matching none of these
-# is not an image this gate can reason about.
-IMAGE_MAGIC = (
-    b"\x89PNG\r\n\x1a\n",   # PNG
-    b"\xff\xd8\xff",           # JPEG
-    b"GIF87a", b"GIF89a",        # GIF
-    b"RIFF",                      # WebP (RIFF....WEBP) and AVIF-ish containers
-    b"II*\x00", b"MM\x00*",       # TIFF little/big endian
-    b"BM",                        # BMP
-    b"\x00\x00\x00",             # ftyp-based containers (HEIC/AVIF): checked below
-)
+# Pillow is REQUIRED. Auditing an image without it produced FIVE separate
+# fail-open paths, each verified: EXIF in a JPEG/WebP was invisible (keyed on the
+# suffix, so a JPEG named .png slipped through), a PNG eXIf chunk was invisible
+# (only tEXt/zTXt/iTXt are parsed), a GIF was invisible and deliberately omitted
+# from the suffix set, a compressed AVIF/HEIC produced no metadata AND no OCR
+# with no warning, and a Pillow that failed to load its shared libraries raised
+# out of the audit instead of being handled. Rather than patch five holes in an
+# optional dependency, the audit refuses to give a verdict without it: "cannot
+# inspect" must never be reported as "clean".
+REQUIRED_TOOL = "Pillow (python3-pil)"
 
 
 def _looks_like_an_image(path: Path) -> bool:
-    """True when the bytes identify a known image format.
+    """True when Pillow can actually decode the file.
 
-    Pillow is authoritative where it exists; this is the check that still works
-    without it, and it is what stops a renamed text file from being vouched for.
+    Pillow is authoritative and required — hand-rolled magic-byte matching was a
+    fail-open: the earlier version accepted a 2-byte prefix, so a text file
+    starting with "BM" (`BMW review notes`), "RIFF", "GIF89a" or "II*\0" was
+    treated as an image and its credential reported as CLEAN. A signature match
+    is not evidence of a decodable image, and a truncated PNG keeps its signature
+    while being unreadable. So: ask the real decoder, and require it to load the
+    pixel data rather than merely parse a header.
     """
     try:
-        with path.open("rb") as handle:
-            head = handle.read(32)
-    except OSError:
-        return False
-    if not head:
-        return False
-    for magic in IMAGE_MAGIC[:-1]:
-        if head.startswith(magic):
-            return True
-    # ftyp containers: bytes 4..8 are b"ftyp" (HEIC, AVIF, MP4-ish).
-    if len(head) >= 12 and head[4:8] == b"ftyp":
-        return True
-    # Anything Pillow can open counts too, for formats without a listed magic.
-    try:
         from PIL import Image
-
+    except Exception:  # noqa: BLE001
+        return False
+    try:
         with Image.open(path) as probe:
-            probe.verify()
+            probe.load()  # a header alone is not enough; truncated files fail here
         return True
     except Exception:  # noqa: BLE001
         return False
@@ -297,10 +313,13 @@ def ocr_text(path: Path) -> str:
     if not _which("tesseract"):
         return ""
     try:
+        # `text=True` decodes BOTH streams as UTF-8, and tesseract echoes the
+        # filename into stderr — so an image whose name is raw non-UTF8 bytes
+        # (a truncated file named by its own signature) raised UnicodeDecodeError
+        # out of the whole run. Bytes with an explicit decode cannot do that.
         out = subprocess.run(
             ["tesseract", str(path), "stdout", "--psm", "6"],
             capture_output=True,
-            text=True,
             timeout=OCR_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
@@ -308,7 +327,15 @@ def ocr_text(path: Path) -> str:
               " pixels were NOT fully read. Treat this result as partial.",
               file=sys.stderr)
         return ""
-    return out.stdout if out.returncode == 0 else ""
+    if out.returncode != 0:
+        # A format tesseract cannot read at all (AVIF, HEIC, PCX, TGA) returns
+        # non-zero with empty output. Silently returning "" made an OCR-blind
+        # image indistinguishable from an image with no text in it.
+        print(f"  WARNING: tesseract could not read {path}"
+              f" (exit {out.returncode}); the pixels were NOT scanned."
+              " Treat this result as partial.", file=sys.stderr)
+        return ""
+    return out.stdout.decode("utf-8", "replace")
 
 
 def _which(name: str) -> bool:
@@ -386,14 +413,7 @@ def audit_image(path: Path, explain: bool = False) -> list[tuple[str, str, str]]
             " NOT audited as an image — check what it actually is",
         ))
 
-    suffix = path.suffix.lower()
-    if not _has_pillow() and suffix in PILLOW_ONLY_SUFFIXES:
-        findings.append((
-            f"metadata:{suffix}",
-            "unreadable image format (Pillow missing)",
-            f"{path.name}: EXIF cannot be read without Pillow, so this image was"
-            " NOT fully audited — install Pillow or audit it by eye",
-        ))
+
 
     # Resolution matters more than anything else about OCR, and it fails in the
     # direction that matters: at small font sizes the engine mangles
@@ -458,6 +478,17 @@ def main(argv: list[str]) -> int:
         print(f"check-image-safety: not a file: {missing[0]}", file=sys.stderr)
         return 2
 
+    # Refuse rather than guess. Without Pillow this audit cannot see EXIF, cannot
+    # read a GIF/AVIF/HEIC, and cannot verify a file is an image at all — so a
+    # CLEAN verdict would be meaningless in the direction that leaks.
+    if not _has_pillow():
+        print(f"check-image-safety: {REQUIRED_TOOL} is required to audit images"
+              " (and .jpeg/.webp/.gif/.avif EXIF cannot be read without it)."
+              " Refusing to report a verdict.\n"
+              "  Install it with: sudo pacman -S python-pillow"
+              "  (or: apt-get install python3-pil)", file=sys.stderr)
+        return 2
+
     all_findings: list[tuple[str, str, str]] = []
     for path in paths:
         try:
@@ -465,6 +496,17 @@ def main(argv: list[str]) -> int:
         except ValueError as exc:
             print(f"check-image-safety: {exc}", file=sys.stderr)
             return 2
+        except Exception as exc:  # noqa: BLE001
+            # One unreadable path must not discard the findings already collected
+            # for every other image, which is what an uncaught exception did.
+            print(f"check-image-safety: could not audit {path}:"
+                  f" {type(exc).__name__}: {exc}", file=sys.stderr)
+            all_findings.append((
+                f"unreadable:{path.name}",
+                "could not be audited",
+                f"{path.name}: {type(exc).__name__} — this file was NOT checked,"
+                " treat it as unaudited rather than clean",
+            ))
 
     if all_findings:
         print()

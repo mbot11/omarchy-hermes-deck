@@ -33,9 +33,9 @@ loosening it should be loud and discussed.
 |---|---|---|---|
 | Secrets / identity | no credential shapes, no author account name, no machine-specific absolute path, no stray artifacts | `python3 tests/check-secrets.py` | every edit, CI |
 | Images | no credential, identity or context finding in metadata or pixels, for **every published image** | `python3 tests/check-image-safety.py <image…>` | before any image is committed, CI |
-| Collector behaviour | 40/40 pass | `python3 tests/test_collect.py` | every edit |
+| Collector behaviour | 42/42 pass | `python3 tests/test_collect.py` | every edit |
 | Action dispatcher | 25/25 pass | `python3 tests/test_act.py` | every edit |
-| Image audit logic | 26/26 pass | `python3 tests/test_image_audit.py` | every edit |
+| Image audit logic | 28/28 pass | `python3 tests/test_image_audit.py` | every edit |
 | DeckState JS helpers | 24/24 pass | `node tests/test_deckstate.js` | every edit |
 | QML plain-text | zero unmarked `Text`/`Label` | `python3 tests/check-qml-plaintext.py .` | every edit |
 | Tree hygiene | no symlinks, one root manifest, root README+LICENSE | `bash tests/check-tree.sh .` | task end |

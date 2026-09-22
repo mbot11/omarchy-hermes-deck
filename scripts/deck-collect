@@ -624,7 +624,15 @@ def parse_cron_list(text) -> list:
     current: dict | None = None
 
     def flush(job):
-        if job and job.get("name"):
+        # A job is only real when BOTH the fields the panel needs arrived. The
+        # producer always prints Name and Schedule for every job, so a header
+        # followed by neither is not a job — which is exactly the shape a name
+        # containing a newline injects (`_coerce_job_text` passes newlines
+        # through, so a name like "ok\n  injected [paused]" renders a line that
+        # looks like a header). Requiring both fields means an injected header
+        # cannot fabricate a job, and it costs nothing real: a genuine job with
+        # an unreadable field was already useless to the panel.
+        if job and job.get("name") and job.get("schedule"):
             jobs.append({
                 "name": clip(job["name"], 120),
                 "schedule": clip(job.get("schedule", ""), 40),
@@ -656,11 +664,17 @@ def parse_cron_list(text) -> list:
         # overwrite the previous job's record.
         indent = len(row) - len(row.lstrip(" "))
         if indent == 2:
-            header = re.fullmatch(r"\S+\s+\[(\w+)\]", row.strip())
-            if header:
+            # The BADGE terminates a header; the id is everything before it and
+            # may contain spaces. Requiring a single whitespace run dropped a job
+            # whose id was `my backup` — reachable without hand-editing, because
+            # an ID-keyed jobs map uses its key verbatim as the id
+            # (cron/jobs.py:1339). Anchored at the END so a name that merely
+            # contains `[x]` cannot be mistaken for a header.
+            header = re.fullmatch(r"(.*?)\s+\[(\w+)\]", row.strip())
+            if header and header.group(1):
                 flush(current)
-                current = {"id": row.strip().split()[0],
-                           "badge": header.group(1).lower(),
+                current = {"id": header.group(1).strip(),
+                           "badge": header.group(2).lower(),
                            "name": "", "schedule": ""}
                 continue
             # A two-space line that is not a header (the banner's inner line) is

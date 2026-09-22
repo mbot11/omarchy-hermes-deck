@@ -78,11 +78,12 @@ function accept(raw, previousCron) {
       var job = state.cron[j]
       if (!job || typeof job !== "object") continue
       if (typeof job.name !== "string" || job.name === "") continue
+      // No `running`: the collector stopped emitting it because nothing read it,
+      // so mapping it here would recreate a dead field one layer up.
       jobs.push({
         name: job.name,
         schedule: typeof job.schedule === "string" ? job.schedule : "",
-        paused: job.paused === true,
-        running: job.running === true
+        paused: job.paused === true
       })
     }
     // An explicitly empty list is only meaningful when the source actually

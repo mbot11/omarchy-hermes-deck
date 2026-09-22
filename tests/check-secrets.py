@@ -195,8 +195,11 @@ def audit() -> int:
         if data is None:
             print(f"cannot read blob for {path}", file=sys.stderr)
             return 2
-        if b"\x00" in data[:8192]:
-            continue  # binary asset; no text patterns apply
+        # A NUL byte does not mean "no text to scan". Skipping the file outright
+        # audited CLEAN a binary blob carrying `key = "AKIA…"`, because a NUL is
+        # common in genuine text (a UTF-16 file, a stray byte) and the extension
+        # was never consulted. Scan the text anyway: an embedded secret is exactly
+        # what this check exists to find, and the cost is a decode on a large file.
         text = data.decode("utf-8", "replace")
 
         for line_number, line in enumerate(text.split("\n"), 1):
@@ -208,7 +211,20 @@ def audit() -> int:
                     findings.append(("IDENTITY", "author username in tree", line_number, f"{path}: {line.strip()[:100]}"))
             for label, pattern in IDENTITY_CHECKS:
                 for match in re.finditer(pattern, line):
-                    if any(allowed in line for allowed in IDENTITY_ALLOW):
+                    # Scope the allowlist to the MATCHED SPAN, not the whole line.
+                    # A per-line test let an allowed host anywhere on the line
+                    # suppress a different finding on it: a line mentioning
+                    # github.com also carrying /home/<acct>/ audited CLEAN, while
+                    # the same path alone was reported. The image scanner was fixed
+                    # for this class; this sibling was not.
+                    low, high = match.span()
+                    if any(
+                        low <= line.find(allowed) < high
+                        for allowed in IDENTITY_ALLOW
+                        if line.find(allowed) != -1
+                    ):
+                        continue
+                    if any(allowed in match.group(0) for allowed in IDENTITY_ALLOW):
                         continue
                     findings.append(("IDENTITY", label, line_number, f"{path}: {line.strip()[:100]}"))
                     break

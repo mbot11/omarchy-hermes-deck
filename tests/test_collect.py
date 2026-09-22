@@ -96,7 +96,18 @@ def run_collect(home: Path, state_home: Path, *flags: str, extra_env: dict | Non
         env=env,
         stdin=subprocess.DEVNULL,
     )
-    payload = json.loads(proc.stdout.decode())
+    # The collector's documented contract is "exit 0 when a JSON object was
+    # produced, exactly one line of stdout". Neither was checked, so a collector
+    # that failed while still printing parseable JSON was reported green.
+    assert proc.returncode == 0, (
+        f"collector exited {proc.returncode} for {flags!r}\n"
+        f"stderr: {proc.stderr.decode()[:500]}"
+    )
+    stdout_lines = [ln for ln in proc.stdout.decode().splitlines() if ln.strip()]
+    assert len(stdout_lines) == 1, (
+        f"collector must emit exactly one JSON line, got {len(stdout_lines)}"
+    )
+    payload = json.loads(stdout_lines[0])
     assert isinstance(payload, dict), "collector must emit one JSON object"
     return payload
 
@@ -689,6 +700,41 @@ class InventoryTests(unittest.TestCase):
                          f"a bracketed job name broke the parse: {jobs!r}")
         self.assertEqual(jobs[1]["schedule"], "0 4 * * *",
                          "the following job's fields were discarded")
+
+    def test_job_id_may_contain_whitespace(self) -> None:
+        """An id is free text: an ID-keyed map uses its key verbatim.
+
+        cron/jobs.py:1339 flattens `{key: job}` using the key as the id, so
+        `my backup` is a legal id and the real CLI prints `  my backup [active]`.
+        A regex requiring a single whitespace run dropped that job entirely.
+        """
+        parse = self._collect_module().parse_cron_list
+        jobs = parse("  my backup [active]\n    Name:      spacey\n    Schedule:  0 1 * * *\n")
+        self.assertEqual([j["name"] for j in jobs], ["spacey"],
+                         f"a job with a space in its id was dropped: {jobs!r}")
+
+    def test_job_name_containing_a_newline_cannot_inject_a_job(self) -> None:
+        """A name with a newline renders a line that looks like a header.
+
+        `_coerce_job_text` (cron/jobs.py:447-449) only stringifies, so a newline
+        passes through and `cron_list`'s `Name:      ok\n  injected [paused]`
+        prints a two-space line carrying a badge. That fabricated a phantom job
+        and stole the real job's schedule. A job now requires both a name and a
+        schedule, which the injected shape cannot supply.
+        """
+        parse = self._collect_module().parse_cron_list
+        injected = ("  abc123 [active]\n"
+                    "    Name:      ok\n"
+                    "  injected [paused]\n"
+                    "    Name: evil\n"
+                    "    Schedule:  0 9 * * 1\n")
+        names = [j["name"] for j in parse(injected)]
+        self.assertNotIn("ok", names,
+                         "the header-only fragment became a job with no schedule")
+        # Every job that IS reported must be complete.
+        for job in parse(injected):
+            self.assertTrue(job["name"] and job["schedule"],
+                            f"an incomplete job was reported: {job!r}")
 
     def test_round_trip_against_the_generated_fixture(self) -> None:
         """Parse the generated fixture and check every field is consistent.
