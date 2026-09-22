@@ -1,7 +1,7 @@
 ---
 name: omarchy-hermes-deck
 description: Operate, audit, troubleshoot, or extend the Hermes Deck Quattro plugin for Omarchy. Use for the io.github.mbot11.hermes-deck service/bar-widget pair, its deck-collect snapshot contract, deck-act action allowlist, the TUI modal, or marketplace validation. Do not use this skill to install Hermes itself, modify privileged bridges, or touch credential stores.
-version: 1.0.0
+version: 1.1.0
 author: mbot11
 license: MIT
 ---

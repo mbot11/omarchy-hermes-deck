@@ -67,6 +67,8 @@ Open the bar settings for the widget:
 | `Escape` in the rename field | Cancel the rename |
 | Right-click a session row | Pin / unpin that session |
 | Left-click a session row | Resume it in the TUI |
+| `↑` / `↓` | Scroll the panel (the content is taller than the card) |
+| `Escape` | Close the panel |
 
 ## Privacy
 
