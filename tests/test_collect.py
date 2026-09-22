@@ -259,6 +259,39 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(gw.get("activeAgentsCount"), 0)
         self.assertEqual(gw.get("connectedPlatforms"), [])
 
+    def test_pinned_and_hidden_read_from_their_columns(self) -> None:
+        """The session query must read `pinned` and filter on `hidden`.
+
+        Both columns exist in the live store (schema v30). A query that
+        substitutes a literal `0 AS pinned` reports every pinned session as
+        unpinned, and one that drops `hidden = 0` lists sessions the user
+        deliberately hid. Neither failure throws, so only an assertion
+        catches it.
+        """
+        self.write_config("model: glm-5.3-flash\n")
+        conn = sqlite3.connect(self.home / "state.db")
+        conn.execute(
+            "INSERT INTO sessions VALUES ('bbbbbbbb-cccc-dddd-eeee-ffffffffffff',"
+            " 'cli', 'Pinned session', NULL, 'glm-5.3-flash', 1, ?, ?, ?, 1, 0.0, 0, 0)",
+            (self.now - 60, self.now - 30, "/home/u/Work/demo"),
+        )
+        conn.execute(
+            "INSERT INTO sessions VALUES ('cccccccc-dddd-eeee-ffff-000000000000',"
+            " 'cli', 'Hidden session', NULL, 'glm-5.3-flash', 1, ?, ?, ?, 0, 0.0, 1, 0)",
+            (self.now - 60, self.now - 20, "/home/u/Work/demo"),
+        )
+        conn.commit()
+        conn.close()
+
+        snap = run_collect(self.home, self.state)
+        by_title = {session["title"]: session for session in snap["sessions"]}
+
+        self.assertIn("Pinned session", by_title, "a pinned session must still be listed")
+        self.assertTrue(by_title["Pinned session"]["pinned"],
+                        "pinned must come from the column, not a literal")
+        self.assertNotIn("Hidden session", by_title,
+                         "a session with hidden = 1 must not be listed")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
