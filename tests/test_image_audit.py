@@ -239,6 +239,33 @@ class TestCompressedTextChunks(unittest.TestCase):
         self.assertIn("sk-live", chunks["Comment"],
                       f"compressed text not decompressed: {chunks!r}")
 
+    def test_compressed_iTXt_secret_is_read_without_pillow(self):
+        """A compressed iTXt chunk, built by the real PNG library.
+
+        The body is NOT hand-assembled: `PngInfo.add_itxt(zip=True)` writes the
+        chunk, because a hand-built body got the NUL-separator count wrong and
+        the buggy code still passed the test. The real layout has FOUR NUL
+        separators (five parts), and the previous parser required six, so it
+        stored the literal `<iTXt>` — which the placeholder exemption then
+        skipped. That is a credential in a real encoder's output returning CLEAN.
+        """
+        io, zlib = __import__("io"), __import__("zlib")
+        from PIL import Image, PngImagePlugin
+
+        secret = "api_key = zupi_" + "uxgqu8m7cey"
+        info = PngImagePlugin.PngInfo()
+        info.add_itxt("Comment", secret, zip=True)
+        buf = io.BytesIO()
+        Image.new("RGB", (64, 64), (9, 9, 9)).save(buf, "PNG", pnginfo=info)
+        data = buf.getvalue()
+
+        chunks = cis.png_text_chunks(data)
+        self.assertIn("Comment", chunks, f"iTXt chunk not extracted: {chunks!r}")
+        self.assertNotIn("<iTXt>", chunks["Comment"],
+                         "the compressed iTXt was stored as a placeholder")
+        self.assertIn("zupi_", chunks["Comment"],
+                      f"compressed iTXt text not decompressed: {chunks['Comment']!r}")
+
     def test_undecodable_chunk_is_a_finding_not_an_exemption(self):
         data = _png_with_chunk(b"zTXt", b"Comment\x00\x00not-deflate-data")
         chunks = cis.png_text_chunks(data)

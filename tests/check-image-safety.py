@@ -150,16 +150,26 @@ def png_text_chunks(data: bytes) -> dict[str, str]:
             _, _, compressed = rest.partition(b"\x00")
             out[key.decode("latin-1", "replace")] = _inflate(compressed)
         elif kind == b"iTXt":
-            # iTXt = keyword \x00 compression_flag compression_method \x00
-            #        language \x00 translated_keyword \x00 text
-            parts = body.split(b"\x00", 5)
-            key = parts[0].decode("latin-1", "replace")
-            if len(parts) >= 6 and parts[1] == b"\x01":
-                out[key] = _inflate(parts[5])
-            elif len(parts) >= 6:
-                out[key] = parts[5].decode("utf-8", "replace")
+            # iTXt = keyword \0 compflag compmethod \0 language \0 translated \0 text
+            # FOUR NUL separators, so splitting on them yields FIVE parts when the
+            # text is the last field — verified against a chunk written by
+            # PIL.PngImagePlugin.PngInfo.add_itxt(zip=True). An earlier version
+            # split into six and stored the literal "<iTXt>" when it got five,
+            # which PLACEHOLDER_VALUE then exempted: a credential in a compressed
+            # iTXt chunk produced CLEAN without Pillow. Never hand-count these
+            # separators — take the text as everything after the 4th NUL.
+            key, _, rest = body.partition(b"\x00")
+            fields = rest.split(b"\x00", 3)
+            key_text = key.decode("latin-1", "replace")
+            if len(fields) < 4:
+                out[key_text] = "<undecodable compressed text chunk>"
             else:
-                out[key] = f"<{kind.decode()}>"
+                comp_flag = fields[0][:1] if fields[0] else b"\x00"
+                text = fields[3]
+                if comp_flag == b"\x01":
+                    out[key_text] = _inflate(text)
+                else:
+                    out[key_text] = text.decode("utf-8", "replace")
         if kind == b"IEND":
             break
         offset += 12 + length

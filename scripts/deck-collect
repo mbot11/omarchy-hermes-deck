@@ -642,7 +642,12 @@ def parse_cron_list(text) -> list:
         if not row:
             continue
         # A job header:  <id> [<badge>]  — the id is hex-ish and badge bracketed.
-        header = re.match(r"^(\S+)\s+\[(\w+)\]$", row)
+        #
+        # The id MUST look like an id. With a bare `\S+` this also matched the
+        # field row `Name:      [urgent]`, so a job whose whole name is a
+        # bracketed token was discarded and its successor's fields were blanked.
+        # The CLI emits lowercase hex ids (cron/jobs.py `uuid…hex[:12]`).
+        header = re.match(r"^([0-9a-f]{6,32})\s+\[(\w+)\]$", row)
         if header:
             flush(current)
             current = {
@@ -702,7 +707,12 @@ def collect_cron(cache: dict) -> list:
     hermes = resolve_hermes()
     if not hermes:
         return []
-    jobs = parse_cron_list(run_cmd([hermes, "cron", "list"], 15))
+    # --all is REQUIRED, not decoration. A paused job is stored as enabled=False,
+    # and list_jobs() filters those out by default (cron/jobs.py:1917-1918), so
+    # bare `hermes cron list` never prints one — which made this section's whole
+    # purpose, showing a paused marker, unreachable. Verified by rendering the
+    # real cron_list() both ways: show_all=False omits the paused job entirely.
+    jobs = parse_cron_list(run_cmd([hermes, "cron", "list", "--all"], 15))
     cache_put(cache, "cron", jobs)
     save_cache(cache)
     return jobs

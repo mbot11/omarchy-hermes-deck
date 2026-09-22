@@ -26,6 +26,17 @@ echo "== image audit logic (regression tests for the detectors) =="
 python3 "$here/test_image_audit.py"
 
 echo
+echo "== cron fixture provenance (skipped when Hermes is absent) =="
+# The cron fixture must still match what the real CLI renders. It is generated,
+# not typed: three successive parsers were validated against hand-written
+# fixtures that agreed with the parser instead of the CLI.
+if python3 "$here/fixtures/generate-cron-fixture.py" --check 2>/dev/null; then
+  :
+else
+  echo "  (no Hermes source tree here; the committed fixture is used as-is)"
+fi
+
+echo
 echo "== DeckState JS helpers =="
 if command -v node >/dev/null 2>&1; then
   node "$here/test_deckstate.js"

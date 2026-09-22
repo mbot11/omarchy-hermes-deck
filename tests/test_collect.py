@@ -528,6 +528,84 @@ class InventoryTests(unittest.TestCase):
                                  f"{badge} mis-derived as paused={jobs[0]['paused']}")
                 self.assertEqual(jobs[0]["name"], "job")
 
+    def test_collector_passes_all_so_paused_jobs_are_visible(self) -> None:
+        """`--all` is required: bare `cron list` hides disabled jobs entirely.
+
+        A paused job is stored as enabled=False, and list_jobs() filters those
+        out by default (cron/jobs.py), so without --all the paused marker this
+        section exists to show can never appear. Verified by rendering the real
+        cron_list() both ways.
+        """
+        stub = STUB_BIN / "hermes"
+        record = Path(self.tmp.name) / "cron-argv.log"
+        wrapper_dir = Path(self.tmp.name) / "rec"
+        wrapper_dir.mkdir()
+        wrapper = wrapper_dir / "hermes"
+        wrapper.write_text(
+            f'#!/usr/bin/env bash\nif [[ ${{1:-}} == cron ]]; then echo "$@" >> {record}; fi\n'
+            f'exec "{stub}" "$@"\n'
+        )
+        wrapper.chmod(0o755)
+        run_collect(self.home, self.state, "--include-inventory",
+                    extra_env={"PATH": f"{wrapper_dir}:{os.environ['PATH']}"})
+        calls = record.read_text().strip() if record.exists() else ""
+        self.assertIn("cron list --all", calls,
+                      f"the collector did not pass --all: {calls!r}")
+
+    def test_job_named_as_a_bracketed_token_survives(self) -> None:
+        """A `Name:` row must never be read as a job header.
+
+        With a bare `\S+` id pattern the header regex also matched
+        `    Name:      [urgent]`, which discarded that job and blanked the next
+        one's fields. Ids are lowercase hex.
+        """
+        parse = self._collect_module().parse_cron_list
+        source = (
+            "  abc123def456 [active]\n"
+            "    Name:      [urgent]\n"
+            "    Schedule:  0 3 * * *\n"
+            "\n"
+            "  99887766aabb [active]\n"
+            "    Name:      beta\n"
+            "    Schedule:  0 4 * * *\n"
+        )
+        jobs = parse(source)
+        self.assertEqual([j["name"] for j in jobs], ["[urgent]", "beta"],
+                         f"a bracketed job name broke the parse: {jobs!r}")
+        self.assertEqual(jobs[1]["schedule"], "0 4 * * *",
+                         "the following job's fields were discarded")
+
+    def test_round_trip_against_the_generated_fixture(self) -> None:
+        """Parse the generated fixture and check every field is consistent.
+
+        This is the general guard for the class of bug that recurred three times:
+        it asserts on the whole parsed set, not on a hand-picked detail, so a
+        parser that only half-reads the format fails.
+        """
+        parse = self._collect_module().parse_cron_list
+        jobs = parse(self.CRON_FIXTURE.read_text(encoding="utf-8"))
+        self.assertEqual(jobs, [
+            {"name": "nightly-backup", "schedule": "0 3 * * *", "paused": False},
+            {"name": "weekly-digest", "schedule": "0 9 * * 1", "paused": True},
+        ])
+
+    def test_generated_fixture_is_not_stale(self) -> None:
+        """The fixture must still match what the CLI's formatter produces.
+
+        Skipped when the Hermes source tree is absent (as in CI): the fixture is
+        committed for that reason, and this check only has meaning on a machine
+        that can re-render it.
+        """
+        hermes_src = Path.home() / ".hermes" / "hermes-agent"
+        if not (hermes_src / "hermes_cli" / "cron.py").is_file():
+            self.skipTest("no Hermes source tree to re-render from")
+        result = subprocess.run(
+            [sys.executable, str(HERE / "fixtures" / "generate-cron-fixture.py"), "--check"],
+            capture_output=True, text=True, timeout=60,
+        )
+        self.assertEqual(result.returncode, 0,
+                         f"the cron fixture is stale: {result.stdout}{result.stderr}")
+
     def test_no_field_label_ever_becomes_a_job_name(self) -> None:
         """A guard for the bug class: a label must never be read as a value."""
         parse = self._collect_module().parse_cron_list

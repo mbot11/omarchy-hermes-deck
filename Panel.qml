@@ -750,9 +750,11 @@ Panel {
       }
 
       // ── Cron ───────────────────────────────────────────────────────────
-      // Inventory only: this shows which scheduled jobs exist and how many are
-      // paused. Pausing and resuming are actions, reachable from the job's own
-      // row via the service, never from a value rendered here.
+      // Inventory only. This shows which scheduled jobs exist and which are
+      // paused; it deliberately offers NO control. Pausing and resuming are not
+      // wired as actions at all (deck-act has no cron case), so the CLI remains
+      // the only place to change a job. An earlier comment claimed they were
+      // reachable from the row, which was never true.
       Column {
         visible: root.cronVisible
         width: parent.width

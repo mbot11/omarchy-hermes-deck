@@ -22,7 +22,7 @@ omarchy plugin add https://github.com/mbot11/omarchy-hermes-deck.git --enable
 | Pin / rename | Right-click a session to pin it, or use the inline rename field. **Pinning writes the same flag Hermes Desktop's own sidebar reads**, so a pin set here appears there without a second store. |
 | Usage | Today and 7-day token totals with Hermes' own cost estimates, broken down by model. |
 | Kanban | Read-only board summaries from `hermes kanban boards list --json`. |
-| Cron | Scheduled jobs with their schedule and a paused marker, from `hermes cron list`. Inventory only — pausing and resuming stay in the CLI. |
+| Cron | Scheduled jobs with their schedule and a paused marker, from `hermes cron list --all`. `--all` is required: a paused job is stored as disabled and is hidden from the default listing. Inventory only — pausing and resuming stay in the CLI. |
 | TUI modal | Quake-style drop-down terminal running `hermes --tui` on a Hyprland special workspace; survives shell restarts. |
 
 Desktop notifications fire when the agent finishes long work, when the emergency stop engages or lifts, and when the gateway service changes state. Disable with the **notify** widget setting.
