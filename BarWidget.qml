@@ -121,8 +121,13 @@ BarWidget {
   Connections {
     target: root.service
     function onWorkingChanged() {
-      if (root.working)
-        pulseAnim.restart()
+      // No animation call here. The halo's SequentialAnimation already drives
+      // itself from `running: root.working`, and it lives inside the bar's
+      // Loader — a different scope from this Connections, so it is not reachable
+      // by id from here anyway. The old body called `pulseAnim.restart()`, an id
+      // that exists nowhere in the file: it raised "ReferenceError: pulseAnim is
+      // not defined" on every working-state change, and the pulse it was supposed
+      // to restart was already being handled by the animation's own binding.
     }
     function onPanelToggleRequested() {
       root.toggle()
