@@ -63,7 +63,12 @@ Rules that must not regress:
   `_cron_list` in hermes_cli/cli_commands_mixin.py is the *slash-command* path
   and prints a DIFFERENT shape. `hermes cron list` prints a boxed banner, then
   `  <id> [<badge>]` with indented `    Name:` / `    Schedule:` rows; badges are
-  `[active]`/`[paused]`/`[completed]`/`[disabled]`. Two successive parsers were
+  `[active]`/`[paused]`/`[completed]`/`[disabled]` — and there is NO `[scheduled]`
+  badge, whatever the state vocabulary says. A job id is NOT guaranteed hex:
+  a null id is coerced to the literal `unknown` and an ID-keyed map uses its key
+  verbatim, so `my-backup` is legal. Detect a job header by its TWO-space indent
+  versus the field rows' FOUR (hermes_cli/cron.py:152 vs :154), never by the id's
+  shape. Two successive parsers were
   written against the wrong shape and both times a hand-written fixture agreed
   with the parser instead of the CLI, so the tests passed while every user with
   jobs saw an empty section. The fixture is now the CLI's own output, generated,

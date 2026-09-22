@@ -30,11 +30,21 @@ echo "== cron fixture provenance (skipped when Hermes is absent) =="
 # The cron fixture must still match what the real CLI renders. It is generated,
 # not typed: three successive parsers were validated against hand-written
 # fixtures that agreed with the parser instead of the CLI.
-if python3 "$here/fixtures/generate-cron-fixture.py" --check 2>/dev/null; then
-  :
-else
-  echo "  (no Hermes source tree here; the committed fixture is used as-is)"
-fi
+# Exit codes are distinct and must be handled separately: 0 = matches, 1 = STALE
+# (a real failure), 2 = no Hermes tree to re-derive from (not a failure, and not
+# a reason to stay silent about it). Treating 1 and 2 alike made this gate
+# incapable of failing — it reported "no Hermes source tree here" on a genuinely
+# stale fixture, which is the opposite of what the comment above claims.
+set +e
+python3 "$here/fixtures/generate-cron-fixture.py" --check
+fixture_rc=$?
+set -e
+case $fixture_rc in
+  0) echo "  fixture matches the CLI's current output" ;;
+  2) echo "  (no Hermes source tree here; the committed fixture is used as-is)" ;;
+  *) echo "cron fixture is STALE — regenerate with tests/fixtures/generate-cron-fixture.py" >&2
+     exit 1 ;;
+esac
 
 echo
 echo "== DeckState JS helpers =="
@@ -88,15 +98,17 @@ fi
 # to ignore it, so this reports the count and fails only if it grows.
 echo
 echo "== qmllint (ratchet: must not grow) =="
-# Raised 178 -> 193 when the Cron section landed, then lowered 197 -> 193 after
-# hoisting the section's derived properties removed four warnings. The remaining
+# Raised 178 -> 193 when the Cron section landed, lowered 197 -> 193 after
+# hoisting the section's derived properties, then raised 193 -> 195 when the
+# summary moved from the per-row text into a header Row (three more
+# missing-property hits against `Style`, and one `unqualified`). The remaining
 # ones are the same two classes documented above and prove out as false
 # positives: Omarchy's own first-party agents/Panel.qml reports 35
 # missing-property and 61 unqualified under this identical invocation, and the
 # missing-property hits are all against `Style` and `bar`, whose members qmllint
 # cannot see through the qs.Commons / qs.Ui singletons. A real QML error is
 # still caught: it is reported as an Error, and this counts only `^Warning:`.
-QML_BUDGET_TOTAL=193
+QML_BUDGET_TOTAL=195
 lint_one() {
   local subject="$1" scratch
   scratch="$(mktemp -d)"

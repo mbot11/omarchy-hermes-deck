@@ -18,3 +18,24 @@
     Next run:  -
     Deliver:   local
 
+  my-backup_2 [active]
+    Name:      external-tool-job
+    Schedule:  @daily
+    Repeat:    ∞
+    Next run:  2026-09-23T00:00:00
+    Deliver:   local
+
+  None [active]
+    Name:      hand-edited-record
+    Schedule:  30 4 * * *
+    Repeat:    ∞
+    Next run:  2026-09-23T04:30:00
+    Deliver:   local
+
+  99887766aabb [active]
+    Name:      [urgent]
+    Schedule:  */5 * * * *
+    Repeat:    ∞
+    Next run:  2026-09-22T15:05:00
+    Deliver:   local
+

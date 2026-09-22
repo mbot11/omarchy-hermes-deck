@@ -106,21 +106,39 @@ PLACEHOLDER_VALUE = re.compile(r"^<(?:zTXt|iTXt)>$")
 # image is already pathological, and no screenshot preview approaches it.
 OCR_TIMEOUT_SECONDS = 60
 MAX_IMAGE_BYTES = 64 * 1024 * 1024
+# Cap on decompressed text-chunk output. A text chunk is metadata: no legitimate
+# one approaches this, and without a cap a 200 KB stream inflates to 200 MB.
+MAX_INFLATED_BYTES = 4 * 1024 * 1024
 
 
 def _inflate(blob: bytes) -> str:
-    """Decompress a zlib stream from a PNG text chunk.
+    """Decompress a zlib stream from a PNG text chunk, with a hard size cap.
 
-    Done with the stdlib rather than Pillow so that a compressed chunk is
-    readable even where Pillow is not installed. This matters: an earlier
-    version stored the literal `<zTXt>` and then exempted that field from the
-    identifying-metadata finding, so a credential inside a compressed chunk
-    produced a CLEAN verdict — the gate failed open on the CI runner.
+    Stdlib rather than Pillow, so a compressed chunk is readable even where
+    Pillow is not installed — an earlier version stored the literal `<zTXt>` and
+    then exempted that field, so a credential in a compressed chunk produced a
+    CLEAN verdict.
+
+    The cap matters as much as the decompression. `zlib.decompress` on an
+    untrusted stream is a decompression bomb: 200 KB of highly compressible
+    input inflates to 200 MB, and this runs on the publish gate, whose whole
+    premise is that it terminates and is not a memory amplifier. Decompress
+    incrementally and stop at MAX_INFLATED_BYTES.
     """
     import zlib
 
     try:
-        return zlib.decompress(blob).decode("utf-8", "replace")
+        engine = zlib.decompressobj()
+        out = bytearray()
+        for offset in range(0, len(blob), 65536):
+            out += engine.decompress(blob[offset : offset + 65536],
+                                     MAX_INFLATED_BYTES - len(out))
+            if len(out) >= MAX_INFLATED_BYTES:
+                # Truncated rather than refused: the credential is almost always
+                # early in the text, and a partial read still gets scanned.
+                out += b"\n<truncated at the size cap>"
+                break
+        return out.decode("utf-8", "replace")
     except (zlib.error, ValueError, TypeError):
         # Undecodable is not the same as empty. Say so, so this cannot pass for
         # a chunk that merely had no text in it.
@@ -150,30 +168,56 @@ def png_text_chunks(data: bytes) -> dict[str, str]:
             _, _, compressed = rest.partition(b"\x00")
             out[key.decode("latin-1", "replace")] = _inflate(compressed)
         elif kind == b"iTXt":
-            # iTXt = keyword \0 compflag compmethod \0 language \0 translated \0 text
-            # FOUR NUL separators, so splitting on them yields FIVE parts when the
-            # text is the last field — verified against a chunk written by
-            # PIL.PngImagePlugin.PngInfo.add_itxt(zip=True). An earlier version
-            # split into six and stored the literal "<iTXt>" when it got five,
-            # which PLACEHOLDER_VALUE then exempted: a credential in a compressed
-            # iTXt chunk produced CLEAN without Pillow. Never hand-count these
-            # separators — take the text as everything after the 4th NUL.
-            key, _, rest = body.partition(b"\x00")
-            fields = rest.split(b"\x00", 3)
+            # iTXt. A short or ambiguous chunk is reported as undecodable rather
+            # than guessed at: trusting a split that "looks right" is how a
+            # compressed payload once got decoded as plain text, so the credential
+            # stopped matching and the audit said CLEAN.
+            # Structured EXACTLY as PIL.PngImagePlugin.PngImageFile.chunk_iTXt
+            # reads it, because that is the reference implementation and two
+            # earlier versions of this branch disagreed with it:
+            #   k, r = r.split(b"\0", 1);  cf, cm, r = r[0], r[1], r[2:]
+            #   lang, tk, v = r.split(b"\0", 2)
+            # Note `r[2:]` drops the flag AND the method, so the language
+            # field's terminator is the FIRST NUL seen after that — skipping an
+            # extra byte here silently eats into the deflate stream, which made
+            # every real chunk report as undecodable.
+            key, sep, rest = body.partition(b"\x00")
             key_text = key.decode("latin-1", "replace")
-            if len(fields) < 4:
+            if not sep or len(rest) < 2:
                 out[key_text] = "<undecodable compressed text chunk>"
             else:
-                comp_flag = fields[0][:1] if fields[0] else b"\x00"
-                text = fields[3]
-                if comp_flag == b"\x01":
-                    out[key_text] = _inflate(text)
+                comp_flag, comp_method, remainder = rest[0], rest[1], rest[2:]
+                parts = remainder.split(b"\x00", 2)
+                if len(parts) < 3:
+                    out[key_text] = "<undecodable compressed text chunk>"
                 else:
-                    out[key_text] = text.decode("utf-8", "replace")
+                    text = parts[2]
+                    if comp_flag != 0:
+                        if comp_method == 0:
+                            out[key_text] = _inflate(text)
+                        else:
+                            # Only deflate is defined for PNG text chunks.
+                            out[key_text] = "<undecodable compressed text chunk>"
+                    else:
+                        out[key_text] = text.decode("utf-8", "replace")
         if kind == b"IEND":
             break
         offset += 12 + length
     return out
+
+
+def _has_pillow() -> bool:
+    """True when Pillow can be imported, i.e. EXIF and non-PNG formats are readable."""
+    try:
+        import PIL  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+# Formats whose metadata/EXIF can ONLY be read with Pillow. A PNG's text chunks
+# are read with the stdlib, so a PNG is fully covered without it.
+PILLOW_ONLY_SUFFIXES = {".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".heic", ".avif", ".bmp"}
 
 
 def image_metadata(path: Path) -> dict[str, str]:
@@ -279,6 +323,20 @@ def audit_image(path: Path, explain: bool = False) -> list[tuple[str, str, str]]
     if not _which("tesseract"):
         print("  WARNING: tesseract is not installed, so the pixels were NOT read."
               " Metadata only. Treat this result as partial.", file=sys.stderr)
+
+    # FAIL CLOSED on a format whose metadata this run cannot read. EXIF in a JPEG
+    # or WebP can only be reached through Pillow, so without it the audit saw no
+    # metadata at all and returned CLEAN on a file carrying a credential in
+    # EXIF — the exact fail-open the CI comment claimed was fixed. An
+    # unreadable-but-plausible artifact must be reported, never vouched for.
+    suffix = path.suffix.lower()
+    if not _has_pillow() and suffix in PILLOW_ONLY_SUFFIXES:
+        findings.append((
+            f"metadata:{suffix}",
+            "unreadable image format (Pillow missing)",
+            f"{path.name}: EXIF cannot be read without Pillow, so this image was"
+            " NOT fully audited — install Pillow or audit it by eye",
+        ))
 
     # Resolution matters more than anything else about OCR, and it fails in the
     # direction that matters: at small font sizes the engine mangles

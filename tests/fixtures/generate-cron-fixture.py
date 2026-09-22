@@ -42,6 +42,7 @@ TARGET = HERE / "hermes-cron-list.txt"
 # are inputs to the CLI's own formatter, which produces the output.
 JOBS = [
     {
+        # A hex id — the common case.
         "id": "182cc80c63f6",
         "name": "nightly-backup",
         "schedule_display": "0 3 * * *",
@@ -56,6 +57,7 @@ JOBS = [
         "last_run_at": "2026-09-22T03:00:00",
     },
     {
+        # enabled=False -> only visible with --all, badge [paused].
         "id": "aabbccddeeff",
         "name": "weekly-digest",
         "schedule_display": "0 9 * * 1",
@@ -67,6 +69,51 @@ JOBS = [
         "repeat": {},
         "deliver": ["local"],
         "prompt": "summarize the week",
+    },
+    {
+        # A NON-HEX id. `_normalize_job_record` uses an ID-keyed map's key
+        # verbatim (cron/jobs.py:1339), so this is a legal real id — and a
+        # parser that assumed hex ids silently dropped the job. Covering it here
+        # is the point: the previous JOBS list hardcoded hex ids, so the fixture
+        # encoded the hex assumption instead of falsifying it.
+        "id": "my-backup_2",
+        "name": "external-tool-job",
+        "schedule_display": "@daily",
+        "schedule": {"value": "@daily"},
+        "enabled": True,
+        "state": "scheduled",
+        "next_run_at": "2026-09-23T00:00:00",
+        "repeat": {},
+        "deliver": ["local"],
+        "prompt": "arrived from an external tool",
+    },
+    {
+        # A missing/null id, which the producer coerces to the literal "unknown"
+        # (cron/jobs.py:495). Also not hex.
+        "id": None,
+        "name": "hand-edited-record",
+        "schedule_display": "30 4 * * *",
+        "schedule": {"value": "30 4 * * *"},
+        "enabled": True,
+        "state": "scheduled",
+        "next_run_at": "2026-09-23T04:30:00",
+        "repeat": {},
+        "deliver": ["local"],
+        "prompt": "legacy record with no id",
+    },
+    {
+        # A job whose whole name is a bracketed token: the field row
+        # `    Name:      [urgent]` must never be read as a job header.
+        "id": "99887766aabb",
+        "name": "[urgent]",
+        "schedule_display": "*/5 * * * *",
+        "schedule": {"value": "*/5 * * * *"},
+        "enabled": True,
+        "state": "scheduled",
+        "next_run_at": "2026-09-22T15:05:00",
+        "repeat": {},
+        "deliver": ["local"],
+        "prompt": "bracket-named job",
     },
 ]
 

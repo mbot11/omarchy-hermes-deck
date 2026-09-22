@@ -628,40 +628,49 @@ def parse_cron_list(text) -> list:
             jobs.append({
                 "name": clip(job["name"], 120),
                 "schedule": clip(job.get("schedule", ""), 40),
-                # `paused` covers every non-firing badge the CLI can print. An
-                # active job shows [active]; a job waiting on its first fire
-                # shows [scheduled]. Anything else means it is not running.
+                # `paused` covers every non-firing badge the CLI can print.
+                # `_STATE_BADGES` (hermes_cli/cron.py:133) has only `paused` and
+                # `completed`; the fallback for an enabled job is `[active]` and
+                # for a disabled one `[disabled]` (:150-151). There is no
+                # `[scheduled]` badge — `scheduled` is the STATE vocabulary, not
+                # the badge one, and quoting it here was wrong.
                 # Only `paused` is exposed. `running` was emitted too and no
                 # consumer ever read it, so it was deleted rather than left as a
                 # field that looks meaningful and is not.
                 "paused": job.get("badge", "") in {"paused", "completed", "disabled"},
             })
 
-    for line in text.splitlines():
-        row = line.strip()
-        if not row:
+    for raw_line in text.splitlines():
+        row = raw_line.rstrip()
+        if not row.strip():
             continue
-        # A job header:  <id> [<badge>]  — the id is hex-ish and badge bracketed.
-        #
-        # The id MUST look like an id. With a bare `\S+` this also matched the
-        # field row `Name:      [urgent]`, so a job whose whole name is a
-        # bracketed token was discarded and its successor's fields were blanked.
-        # The CLI emits lowercase hex ids (cron/jobs.py `uuid…hex[:12]`).
-        header = re.match(r"^([0-9a-f]{6,32})\s+\[(\w+)\]$", row)
-        if header:
-            flush(current)
-            current = {
-                "id": header.group(1),
-                "badge": header.group(2).lower(),
-                "name": "",
-                "schedule": "",
-            }
+
+        # INDENTATION is the discriminator, not the id's shape. The producer
+        # prints a job header with TWO leading spaces and a field row with FOUR
+        # (hermes_cli/cron.py:152 and :154). Reading the header by id shape was
+        # wrong three times: an id is NOT guaranteed hex — `_normalize_job_record`
+        # coerces a missing id to the literal "unknown" (cron/jobs.py:495) and an
+        # ID-keyed map from an external tool uses the key verbatim as the id
+        # (cron/jobs.py:1339), so `my-backup` and `weekly_digest` are legal. A
+        # shape test drops those jobs, and worse, lets the following job's fields
+        # overwrite the previous job's record.
+        indent = len(row) - len(row.lstrip(" "))
+        if indent == 2:
+            header = re.fullmatch(r"\S+\s+\[(\w+)\]", row.strip())
+            if header:
+                flush(current)
+                current = {"id": row.strip().split()[0],
+                           "badge": header.group(1).lower(),
+                           "name": "", "schedule": ""}
+                continue
+            # A two-space line that is not a header (the banner's inner line) is
+            # skipped, not treated as a field: it would corrupt the current job.
             continue
-        if current is None:
+
+        if current is None or indent < 4:
             continue  # the banner, before the first job
-        # A field row:   Label:  value   (labels are right-padded to 11 chars,
-        # so there are two or more spaces after the colon).
-        field = re.match(r"^([A-Za-z][A-Za-z ]*?):\s+(.*)$", row)
+
+        field = re.match(r"^([A-Za-z][A-Za-z ]*?):\s+(.*)$", row.strip())
         if not field:
             continue
         label, value = field.group(1), field.group(2).strip()

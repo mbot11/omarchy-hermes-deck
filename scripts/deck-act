@@ -100,6 +100,13 @@ case "$action" in
     # Model ids: alphanumerics plus . _ : / - (e.g. gpt-oss:120b, glm-5.3-flash).
     # The first character may not be a dash, or the value could parse as a
     # CLI option instead of a value.
+    # No dot-dot segment: the value is passed as one argv entry and never opened
+    # as a path, so this is not a security boundary — but `../../etc/passwd` as a
+    # model id is a confusing state to leave in the config.
+    [[ $model_id != *..* ]] || {
+      echo "deck-act: invalid model id" >&2
+      exit 65
+    }
     [[ $model_id =~ ^[A-Za-z0-9._:/][A-Za-z0-9._:/-]{0,127}$ ]] || {
       echo "deck-act: invalid model id" >&2
       exit 65

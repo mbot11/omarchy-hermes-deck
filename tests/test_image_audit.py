@@ -11,6 +11,7 @@ Run:  python3 tests/test_image_audit.py
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -123,20 +124,62 @@ class TestMetadataPlaceholderIsExact(unittest.TestCase):
 
 
 class TestOCRBounds(unittest.TestCase):
-    def test_ocr_has_a_timeout(self):
-        import inspect
+    def test_a_slow_tesseract_does_not_hang_the_gate(self):
+        """Behavioural, not a source-text assertion.
 
-        self.assertIn("timeout", inspect.getsource(cis.ocr_text),
-                      "subprocess.run without timeout can hang the gate forever")
+        Asserting that the string "timeout" appears in the function passes on any
+        edit that keeps the identifier, including one that stops using it. This
+        substitutes a stalling `tesseract` and requires the call to give up.
+        """
+        import time
+        from unittest import mock
+
+        def stalling(*args, **kwargs):
+            if "timeout" not in kwargs:
+                time.sleep(300)  # would hang the real gate
+            raise subprocess.TimeoutExpired(cmd="tesseract", timeout=kwargs["timeout"])
+
+        with mock.patch.object(cis, "_which", return_value=True), \
+             mock.patch.object(cis.subprocess, "run", side_effect=stalling):
+            started = time.time()
+            result = cis.ocr_text(Path("/nonexistent.png"))
+            elapsed = time.time() - started
+        self.assertEqual(result, "", "a timed-out OCR must return empty text")
+        self.assertLess(elapsed, 30, "the OCR call did not respect a timeout")
 
 
 class TestReadBounds(unittest.TestCase):
     def test_oversized_image_is_refused_not_read(self):
-        import inspect
+        """Behavioural: a real oversized file must be refused."""
+        import tempfile
+        from unittest import mock
 
-        source = inspect.getsource(cis.image_metadata)
-        self.assertIn("MAX_IMAGE_BYTES", source,
-                      "image_metadata reads an unbounded file into memory")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "huge.png"
+            path.write_bytes(b"\x89PNG\r\n\x1a\n")
+            # Report it as over the cap without writing a real 64 MiB file.
+            real_stat = Path.stat
+
+            def fake_stat(self, *a, **kw):
+                result = real_stat(self, *a, **kw)
+                return type("S", (), {"st_size": cis.MAX_IMAGE_BYTES + 1})() \
+                    if self == path else result
+
+            with mock.patch.object(Path, "stat", fake_stat):
+                with self.assertRaises(ValueError):
+                    cis.image_metadata(path)
+
+    def test_oversized_image_is_reported_not_crashed(self):
+        """The refusal must reach the caller as a reported finding."""
+        import tempfile
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "huge.png"
+            path.write_bytes(b"\x89PNG\r\n\x1a\n")
+            with mock.patch.object(cis, "MAX_IMAGE_BYTES", 1):
+                code = cis.main(["check-image-safety.py", str(path)])
+            self.assertEqual(code, 2, "an oversized image should exit 2, not crash")
 
 
 class TestTildePaths(unittest.TestCase):
@@ -277,6 +320,56 @@ class TestCompressedTextChunks(unittest.TestCase):
         chunks = cis.png_text_chunks(data)
         self.assertIn("sk-live", chunks.get("Comment", ""),
                       f"tEXt not read: {chunks!r}")
+
+
+class TestInflateIsBounded(unittest.TestCase):
+    """A decompression bomb must not run on the publish gate.
+
+    `zlib.decompress` on untrusted input expands ~1000x: 200 KB of zeros becomes
+    200 MB. The gate's own comment promises it terminates and is not a memory
+    amplifier, and MAX_IMAGE_BYTES caps the FILE, not the expansion.
+    """
+
+    def test_decompression_bomb_is_capped(self):
+        import zlib
+
+        bomb = zlib.compress(b"\x00" * (64 * 1024 * 1024), 9)
+        self.assertLess(len(bomb), 200_000, "the test input should be small")
+        out = cis._inflate(bomb)
+        self.assertLessEqual(len(out), cis.MAX_INFLATED_BYTES + 100,
+                             "the inflate result was not capped")
+
+    def test_small_payload_is_not_truncated(self):
+        import zlib
+
+        out = cis._inflate(zlib.compress(b"api_key = sk-live-abc"))
+        self.assertIn("sk-live-abc", out)
+
+
+class TestFailClosedOnUnreadableFormats(unittest.TestCase):
+    """A format this run cannot read must not produce a CLEAN verdict.
+
+    EXIF in a JPEG or WebP is reachable only through Pillow. Without it the audit
+    saw no metadata and returned CLEAN on a file carrying a credential in EXIF —
+    the fail-open that a CI comment claimed was fixed.
+    """
+
+    def test_pillow_only_suffixes_are_declared(self):
+        for suffix in (".jpg", ".jpeg", ".webp", ".tif", ".tiff"):
+            self.assertIn(suffix, cis.PILLOW_ONLY_SUFFIXES)
+
+    def test_unreadable_format_is_reported_when_pillow_is_absent(self):
+        import tempfile
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "shot.jpg"
+            path.write_bytes(b"\xff\xd8\xff\xe0not a real jpeg")
+            with mock.patch.object(cis, "_has_pillow", return_value=False):
+                findings = cis.audit_image(path)
+            labels = [f[1] for f in findings]
+            self.assertIn("unreadable image format (Pillow missing)", labels,
+                          f"an unreadable format produced no finding: {findings!r}")
 
 
 class TestLeakDetectors(unittest.TestCase):

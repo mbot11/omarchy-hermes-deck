@@ -760,10 +760,27 @@ Panel {
         width: parent.width
         spacing: Style.space(6)
 
-        PanelSectionHeader {
-          text: "CRON"
-          foreground: root.bar.foreground
-          fontFamily: root.bar.fontFamily
+        Row {
+          width: parent.width
+          spacing: Style.space(8)
+
+          PanelSectionHeader {
+            text: "CRON"
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+          }
+          Item {
+            height: 1
+            width: Math.max(0, parent.width - parent.children[0].implicitWidth
+                            - parent.children[1].implicitWidth - Style.space(16))
+          }
+          Text {
+            text: root.cronSummaryText
+            textFormat: Text.PlainText
+            color: Qt.darker(root.bar.foreground, 1.4)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
         }
 
         Repeater {
@@ -789,10 +806,12 @@ Panel {
             }
             Item {
               height: 1
-              width: Math.max(0, parent.width - parent.children[0].implicitWidth - parent.children[1].implicitWidth - parent.children[3].implicitWidth - Style.space(24))
+              width: Math.max(0, parent.width - parent.children[0].implicitWidth - parent.children[1].implicitWidth - Style.space(16))
             }
             Text {
-              text: root.cronSummaryText
+              // Per-row state, not the section summary: the summary used to be
+              // rendered here, which repeated the same string on every row.
+              text: modelData.paused ? "paused" : "active"
               textFormat: Text.PlainText
               color: Qt.darker(root.bar.foreground, 1.4)
               font.family: root.bar.fontFamily

@@ -81,34 +81,19 @@ EOF
     esac
     ;;
   cron)
-    # `hermes cron list` has no --json. The stub emits the REAL format, kept in
-    # tests/fixtures/hermes-cron-list.txt — which is not hand-written but
-    # rendered by the CLI's own cron_list/_job_rows/_print_banner functions.
-    # An earlier stub invented a table, which made a broken parser look correct.
+    # `hermes cron list` has no --json. The stub READS the fixture file rather
+    # than embedding a copy: an inlined copy drifted the moment the fixture was
+    # regenerated, so the stub kept answering the old shape while the tests
+    # asserted the new one. One copy of the truth, read at call time.
     case "${2:-}" in
       list)
-        cat <<'HERMES_CRON_EOF'
-
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         Scheduled Jobs                                  │
-└─────────────────────────────────────────────────────────────────────────┘
-
-  182cc80c63f6 [active]
-    Name:      nightly-backup
-    Schedule:  0 3 * * *
-    Repeat:    ∞
-    Next run:  2026-09-23T03:00:00
-    Deliver:   local
-    Last run:  2026-09-22T03:00:00  ok
-
-  aabbccddeeff [paused]
-    Name:      weekly-digest
-    Schedule:  0 9 * * 1
-    Repeat:    ∞
-    Next run:  -
-    Deliver:   local
-
-HERMES_CRON_EOF
+        fixture="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/hermes-cron-list.txt"
+        if [[ -r $fixture ]]; then
+          cat "$fixture"
+        else
+          echo "stub hermes: cron fixture missing" >&2
+          exit 64
+        fi
         ;;
       pause | resume | run) exit 0 ;;
       *) exit 64 ;;

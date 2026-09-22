@@ -137,6 +137,24 @@ const notPaused = deck.accept(JSON.stringify({ schemaVersion: 2, id: "hermes-dec
 check("absent paused defaults to false", notPaused.paused, false);
 check("deckState is not paused", deck.deckState(notPaused), "gatewayDown");
 
+// ── activity.working must survive accept() ─────────────────────────────────
+// It was overwritten unconditionally, so deckState() could never return
+// "working" and the working indicator plus the finished-notification were dead.
+console.log("activity.working survives accept");
+const working = deck.accept(JSON.stringify({
+  schemaVersion: 2, id: "hermes-deck", installed: true,
+  activity: { working: true, lastMessageAt: 1758500000, secondsSinceLastMessage: 3 },
+  gateway: { serviceState: "active", enabled: "enabled", connectedPlatforms: [], activeAgentsCount: 0 },
+}));
+check("working is carried", working.activity.working, true);
+check("deckState reports working", deck.deckState(working), "working");
+check("lastMessageAt is carried", working.activity.lastMessageAt, 1758500000);
+
+const noActivity = deck.accept(JSON.stringify({ schemaVersion: 2, id: "hermes-deck", installed: true }));
+check("absent activity defaults to not-working", noActivity.activity.working, false);
+check("absent activity keeps the shape",
+  Object.keys(noActivity.activity).sort(), ["lastMessageAt", "secondsSinceLastMessage", "working"]);
+
 // ── cronSummary: what the panel header renders ─────────────────────────────
 console.log("cronSummary");
 check("counts total and paused",

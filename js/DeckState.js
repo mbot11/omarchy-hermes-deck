@@ -49,7 +49,20 @@ function accept(raw, previousCron) {
   }
   state.isDefaultAgent = Boolean(state.isDefaultAgent)
   state.desktopAvailable = Boolean(state.desktopAvailable)
+  // Only default `activity` when the payload did not carry one. The previous
+  // version overwrote it UNCONDITIONALLY, so `working` could never be true:
+  // deckState() never returned "working", the bar's working dot never lit, and
+  // Service.qml's "finished" notification (which fires on a working->idle
+  // transition) was dead code. Same failure class as `paused` above.
+  if (!parsed.activity || typeof parsed.activity !== "object") {
     state.activity = { working: false, lastMessageAt: null, secondsSinceLastMessage: null }
+  } else {
+    state.activity = {
+      working: parsed.activity.working === true,
+      lastMessageAt: parsed.activity.lastMessageAt !== undefined ? parsed.activity.lastMessageAt : null,
+      secondsSinceLastMessage: parsed.activity.secondsSinceLastMessage !== undefined ? parsed.activity.secondsSinceLastMessage : null
+    }
+  }
   if (!Array.isArray(state.sessions)) state.sessions = []
   if (!Array.isArray(state.auth)) state.auth = []
   if (!state.kanban || typeof state.kanban !== "object") state.kanban = { available: false, boards: [] }

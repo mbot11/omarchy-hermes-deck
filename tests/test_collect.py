@@ -423,10 +423,8 @@ class InventoryTests(unittest.TestCase):
         snap = run_collect(self.home, self.state, "--include-inventory")
         self.assertIn("cron", snap)
         jobs = snap["cron"]
-        self.assertEqual(len(jobs), 2, f"expected 2 jobs, got {jobs!r}")
+        self.assertEqual(len(jobs), 5, f"expected 5 jobs, got {jobs!r}")
         by_name = {job["name"]: job for job in jobs}
-        self.assertIn("nightly-backup", by_name)
-        self.assertIn("weekly-digest", by_name)
         self.assertFalse(by_name["nightly-backup"]["paused"])
         self.assertTrue(by_name["weekly-digest"]["paused"])
 
@@ -439,7 +437,8 @@ class InventoryTests(unittest.TestCase):
         """
         snap = run_collect(self.home, self.state, "--include-inventory")
         names = [job["name"] for job in snap["cron"]]
-        self.assertEqual(names, ["nightly-backup", "weekly-digest"],
+        self.assertEqual(names, ["nightly-backup", "weekly-digest",
+                                 "external-tool-job", "hand-edited-record", "[urgent]"],
                          f"banner text or a label leaked into the names: {names!r}")
 
     def test_fast_path_carries_cached_inventory_without_a_subprocess(self) -> None:
@@ -452,7 +451,7 @@ class InventoryTests(unittest.TestCase):
         section between refreshes and made it flicker.
         """
         slow = run_collect(self.home, self.state, "--include-inventory")
-        self.assertEqual(len(slow["cron"]), 2)
+        self.assertEqual(len(slow["cron"]), 5)
 
         fast = run_collect(self.home, self.state)  # no inventory flag
         self.assertIn("cron", fast)
@@ -496,12 +495,18 @@ class InventoryTests(unittest.TestCase):
         """
         parse = self._collect_module().parse_cron_list
         jobs = parse(self.CRON_FIXTURE.read_text(encoding="utf-8"))
-        self.assertEqual([j["name"] for j in jobs], ["nightly-backup", "weekly-digest"],
+        self.assertEqual([j["name"] for j in jobs],
+                         ["nightly-backup", "weekly-digest", "external-tool-job",
+                          "hand-edited-record", "[urgent]"],
                          f"wrong names parsed: {jobs!r}")
         self.assertEqual(jobs[0]["schedule"], "0 3 * * *")
         self.assertEqual(jobs[1]["schedule"], "0 9 * * 1")
         self.assertFalse(jobs[0]["paused"], "an [active] job reported as paused")
         self.assertTrue(jobs[1]["paused"], "the [paused] badge was not read")
+        # The awkward ids: a non-hex external id and a null id coerced to
+        # "unknown" must both survive, or those jobs vanish from the panel.
+        self.assertEqual(jobs[2]["schedule"], "@daily")
+        self.assertEqual(jobs[3]["schedule"], "30 4 * * *")
 
     def test_cron_parser_ignores_the_banner(self) -> None:
         """The box-drawing banner is not a job."""
@@ -584,9 +589,17 @@ class InventoryTests(unittest.TestCase):
         """
         parse = self._collect_module().parse_cron_list
         jobs = parse(self.CRON_FIXTURE.read_text(encoding="utf-8"))
+        # Every job the generator renders, including the awkward ones: a
+        # non-hex id, a null id coerced to "unknown", and a name that is itself
+        # a bracketed token. Asserting the WHOLE set is the point — an
+        # "is X absent" assertion passes on an empty parse, which is exactly
+        # what a broken parser produces.
         self.assertEqual(jobs, [
             {"name": "nightly-backup", "schedule": "0 3 * * *", "paused": False},
             {"name": "weekly-digest", "schedule": "0 9 * * 1", "paused": True},
+            {"name": "external-tool-job", "schedule": "@daily", "paused": False},
+            {"name": "hand-edited-record", "schedule": "30 4 * * *", "paused": False},
+            {"name": "[urgent]", "schedule": "*/5 * * * *", "paused": False},
         ])
 
     def test_generated_fixture_is_not_stale(self) -> None:
