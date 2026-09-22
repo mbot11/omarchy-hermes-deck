@@ -54,6 +54,34 @@ and a drop-down TUI modal.
    screenshot that has not passed this gate, including in a review thread or a
    chat.
 
+## Competitor material: specs only, never code
+
+**Clean-room rule.** Other Hermes/Omarchy plugins may be studied for what they
+do — their feature set, their UX, their failure modes, the problems they solve —
+and for nothing else. **No code, no repo, no file, no snippet from a competitor
+may enter this tree**, and no implementation detail may be copied even in
+paraphrase.
+
+Why this is a rule and not a preference: the marketplace compares plugins, the
+licenses differ (MIT here, others vary), and a copied implementation carries the
+original's bugs — this project has spent five review rounds on exactly the class
+of bug that a copied parser brings.
+
+How to study a competitor correctly:
+
+- Read their **README, changelog, and marketplace listing** — that is the
+  published spec of what they do.
+- Read their **issue threads** for the problems users hit; that is the honest
+  description of the design's failure modes.
+- Note the **feature** and the **user-visible behaviour**, then design an
+  independent implementation from this project's own invariants.
+- A citation comment (`# see <project>#<issue>`) is allowed ONLY to reference an
+  upstream *bug report* whose behaviour this code must not reproduce. Citing a
+  bug is not copying code.
+
+If a design question can only be answered by reading their source, the answer is
+to design from the requirement, not to read the source.
+
 ## Running the gates
 
 ```bash

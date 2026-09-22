@@ -161,6 +161,33 @@ PY
 [ $? -ne 0 ] && fail=1
 
 echo
+echo "== competitor material (clean-room rule) =="
+# Other plugins may be studied for their SPEC and BEHAVIOUR, never their code. No
+# file or snippet from another plugin may enter this tree, and no implementation
+# may be copied in paraphrase. A comment citing an upstream BUG REPORT is allowed
+# (it names behaviour to avoid, not code to reuse).
+competitor_names='hermes-companion|omarchy-hermes-companion|hermes-harness|hermes-usage|hermes-kanban|hermes-overlay|hermes-sessions|hermes-agent-widget|omarchy-hermes-api|agent-orchestr|hermbot|botty|hermes-api'
+violations=0
+while IFS= read -r f; do
+  case "$f" in
+    docs/history/*|AGENTS.md|CONSTRAINTS.md|tests/check-tree.sh) continue ;;
+  esac
+  # a citation comment naming an upstream issue is explicitly allowed
+  hits=$(grep -nEi "$competitor_names" "$f" 2>/dev/null | grep -viE '#.*(issue|#2|bug|cite|reference|upstream)' || true)
+  if [ -n "$hits" ]; then
+    echo "FAIL $f references another plugin without a bug-report citation:"
+    printf '%s\n' "$hits" | head -3 | sed 's/^/       /'
+    violations=$((violations + 1))
+  fi
+done < <(git ls-files '*.py' '*.sh' '*.qml' '*.js' '*.json')
+if [ "$violations" -gt 0 ]; then
+  echo "  competitor material found — see the clean-room rule in AGENTS.md" >&2
+  fail=1
+else
+  echo "PASS no competitor code or identifiers in this tree"
+fi
+
+echo
 if [ "$fail" -eq 0 ]; then
   echo "tree hygiene: clean"
 else

@@ -171,3 +171,14 @@ and the same rule stalled `hermes.companion` (#7330). Therefore:
 - Implement on a branch, never on `main`.
 - After a review round-trips, re-verify before assuming the tree still matches
   what was reviewed.
+
+## Competitor code is never vendored or copied
+
+Studying other plugins is allowed for their **published spec** (README, changelog,
+marketplace listing, issue threads) and their **user-visible behaviour**. No code,
+file, or snippet from any other plugin enters this tree, and no implementation is
+copied in paraphrase. A citation comment may reference an upstream *bug report*
+whose behaviour this code must not reproduce; that is not copying code.
+
+Enforced by: `tests/check-tree.sh` (tree hygiene) plus the review checklist — any
+new file that resembles another plugin's implementation is a blocker, not a nit.
