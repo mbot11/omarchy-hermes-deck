@@ -286,7 +286,8 @@ def _pin_pillow_limits() -> None:
             f"check-image-safety: Pillow is installed but unusable"
             f" ({type(exc).__name__}: {exc}). Refusing to report a verdict."
             "\n  Reinstall it: sudo pacman -S python-pillow"
-            "  (or: apt-get install python3-pil)",
+            "  (or: python3 -m pip install Pillow — into the interpreter that"
+            " runs this audit)",
             file=sys.stderr,
         )
         raise SystemExit(2)
@@ -645,7 +646,9 @@ def main(argv: list[str]) -> int:
               " (and .jpeg/.webp/.gif/.avif EXIF cannot be read without it)."
               " Refusing to report a verdict.\n"
               "  Install it with: sudo pacman -S python-pillow"
-              "  (or: apt-get install python3-pil)", file=sys.stderr)
+              "  (Debian/Ubuntu: python3 -m pip install Pillow — note that"
+              " `apt-get install python3-pil` lands in the SYSTEM python, which a"
+              " hosted/venv interpreter will not see)", file=sys.stderr)
         return 2
 
     all_findings: list[tuple[str, str, str]] = []

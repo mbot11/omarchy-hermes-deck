@@ -26,9 +26,20 @@ jobs:
       - name: Image audit (metadata and pixels)
         run: |
           # Pillow is REQUIRED, not optional: without it the audit cannot read
-          # compressed zTXt/iTXt PNG chunks or EXIF, and it used to fail OPEN on
-          # credential-bearing images. The integration test needs it too.
-          sudo apt-get install -y -qq tesseract-ocr python3-pil >/dev/null
+          # compressed zTXt/iTXt PNG chunks or EXIF, and the audit REFUSES to
+          # report rather than fail open on a credential-bearing image.
+          #
+          # Install it with pip, into the interpreter that actually runs the
+          # audit. `apt-get install python3-pil` puts Pillow in the SYSTEM
+          # Debian Python's dist-packages, but actions/setup-python@v5 puts a
+          # hosted 3.12 first on PATH — so the apt package was invisible and the
+          # gate correctly refused with exit 2. That is why this step failed in
+          # CI while passing locally.
+          sudo apt-get install -y -qq tesseract-ocr >/dev/null
+          python3 -m pip install --quiet "Pillow==11.*"
+          # Prove the interpreter that runs the audit can actually see it,
+          # rather than assuming the install worked.
+          python3 -c "import PIL, sys; print('Pillow', PIL.__version__, 'for', sys.executable)"
           python3 tests/check-image-safety.py --self-test
           mapfile -t IMAGES < <(git ls-files | grep -iE '\.(png|jpe?g|webp|avif|gif)$')
           if [ "${#IMAGES[@]}" -gt 0 ]; then
