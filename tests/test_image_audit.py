@@ -592,5 +592,46 @@ class TestLeakDetectors(unittest.TestCase):
             self.assertTrue(findings, "author name in a PNG comment was exempted")
 
 
+class TestSecretScannerInvariants(unittest.TestCase):
+    """The secret gate's own guards. Each of these caught a real defect."""
+
+    def test_oversize_blob_is_reported_not_skipped(self):
+        """A blob over the cap must be a FINDING, not a silent pass.
+
+        'Too large to inspect' reading the same as 'clean' is the fail-open
+        shape this file has produced repeatedly.
+        """
+        import subprocess, tempfile, os
+        with tempfile.TemporaryDirectory() as d:
+            subprocess.run(["git", "init", "-q", "."], cwd=d, check=True)
+            big = os.path.join(d, "big.dat")
+            with open(big, "w") as fh:
+                fh.write("x" * (5 * 1024 * 1024))
+            subprocess.run(["git", "add", "-A"], cwd=d, check=True)
+            subprocess.run(["git", "-c", "user.email=a@b", "-c", "user.name=a",
+                            "commit", "-qm", "big"], cwd=d, check=True)
+            scanner = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "check-secrets.py")
+            out = subprocess.run(["python3", scanner, "."], cwd=d,
+                                 capture_output=True, text=True)
+            self.assertEqual(out.returncode, 1, "an un-scanned file must fail the gate")
+            self.assertIn("OVERSIZE", out.stdout)
+            self.assertIn("NOT inspected", out.stdout)
+
+    def test_identity_lookup_is_resolved_once_per_file(self):
+        """`author_usernames()` must not be called inside the per-line loop.
+
+        It spawns two `git config` subprocesses per call; calling it per line made
+        a 8.7k-line audit take 20.5s instead of 0.4s.
+        """
+        src = (Path(__file__).parent / "check-secrets.py").read_text()
+        body = src.split("def audit()", 1)[1]
+        loop = body.split("for line_number, line in enumerate", 1)[1]
+        self.assertNotIn("author_usernames()", loop,
+                         "author_usernames() is back inside the per-line loop")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+

@@ -87,6 +87,13 @@ IDENTITY_ALLOW = [
     "127.0.0.1:9119",      # documented Hermes dashboard default, in docs only
 ]
 
+# Cap on the blob this scanner will load and scan. Not a memory worry in
+# practice — check-tree.sh already rejects a tracked file over 512 KiB — but the
+# bound should be stated where it is relied on, not inherited from another gate's
+# ordering. A blob over this is reported as a finding, never silently skipped:
+# "too large to scan" must not read the same as "clean".
+MAX_BLOB_BYTES = 4 * 1024 * 1024
+
 ARTIFACT_PATTERNS: list[tuple[str, str]] = [
     ("python bytecode", r"__pycache__/|\.pyc$"),
     ("editor backup", r"~$|\.swp$|\.swo$"),
@@ -200,13 +207,26 @@ def audit() -> int:
         # common in genuine text (a UTF-16 file, a stray byte) and the extension
         # was never consulted. Scan the text anyway: an embedded secret is exactly
         # what this check exists to find, and the cost is a decode on a large file.
+        if len(data) > MAX_BLOB_BYTES:
+            findings.append((
+                "OVERSIZE", "blob too large to scan", 0,
+                f"{path}: {len(data)} bytes exceeds the {MAX_BLOB_BYTES}-byte scan cap;"
+                " this file was NOT inspected",
+            ))
+            continue
         text = data.decode("utf-8", "replace")
+
+        # Resolve the identity list ONCE per file, not once per line. This was
+        # called inside the per-line loop, spawning two `git config` subprocesses
+        # for every line of every tracked file (~17k spawns on a 8.7k-line tree).
+        # It never changed the verdict, only the runtime.
+        usernames = author_usernames()
 
         for line_number, line in enumerate(text.split("\n"), 1):
             for label, pattern in SECRET_PATTERNS:
                 if re.search(pattern, line):
                     findings.append(("SECRET", label, line_number, f"{path}: {line.strip()[:100]}"))
-            for username in author_usernames():
+            for username in usernames:
                 if username in line:
                     findings.append(("IDENTITY", "author username in tree", line_number, f"{path}: {line.strip()[:100]}"))
             for label, pattern in IDENTITY_CHECKS:
@@ -246,7 +266,7 @@ def audit() -> int:
         print("CLEAN: no secrets, no machine identity, no stray artifacts")
         return 0
 
-    order = {"SECRET": 0, "IDENTITY": 1, "ENTROPY": 2, "ARTIFACT": 3}
+    order = {"SECRET": 0, "IDENTITY": 1, "ENTROPY": 2, "ARTIFACT": 3, "OVERSIZE": 4}
     for kind, label, line_number, detail in sorted(findings, key=lambda f: (order[f[0]], f[1])):
         where = f":{line_number}" if line_number else ""
         print(f"{kind:<9} {label}{where}")
