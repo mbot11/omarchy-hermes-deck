@@ -406,6 +406,19 @@ class InventoryTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
+    CRON_FIXTURE = HERE / "fixtures" / "hermes-cron-list.txt"
+
+    def _collect_module(self):
+        """Import the collector so its parser can be called directly."""
+        import importlib.machinery
+        import importlib.util
+
+        loader = importlib.machinery.SourceFileLoader("deck_collect", str(COLLECT))
+        spec = importlib.util.spec_from_loader("deck_collect", loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        return module
+
     def test_inventory_reports_cron_jobs_with_paused_state(self) -> None:
         snap = run_collect(self.home, self.state, "--include-inventory")
         self.assertIn("cron", snap)
@@ -417,12 +430,17 @@ class InventoryTests(unittest.TestCase):
         self.assertFalse(by_name["nightly-backup"]["paused"])
         self.assertTrue(by_name["weekly-digest"]["paused"])
 
-    def test_header_row_is_not_reported_as_a_job(self) -> None:
+    def test_banner_text_is_not_reported_as_a_job(self) -> None:
+        """The box banner is decoration, not a job.
+
+        Asserts the parsed names are CORRECT, not merely that some strings are
+        absent — the earlier version passed on an empty parse, which is exactly
+        what the broken parser produced, so it certified the failure.
+        """
         snap = run_collect(self.home, self.state, "--include-inventory")
         names = [job["name"] for job in snap["cron"]]
-        self.assertNotIn("NAME", names)
-        for junk in ("SCHEDULE", "STATUS", "NEXT"):
-            self.assertNotIn(junk, names)
+        self.assertEqual(names, ["nightly-backup", "weekly-digest"],
+                         f"banner text or a label leaked into the names: {names!r}")
 
     def test_fast_path_carries_cached_inventory_without_a_subprocess(self) -> None:
         """The invariant is 'spawns nothing', not 'omits the key'.
@@ -465,73 +483,62 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(snap["cron"], [])
 
     def test_cron_parser_reads_the_real_output_format(self) -> None:
-        """The parser must read what `hermes cron list` actually prints.
+        """Parse the bytes `hermes cron list` really prints.
 
-        The real format is a label block per job, with no column header and no
-        table — verified against the installed CLI's own formatter
-        (hermes_cli/cli_commands_mixin.py, `_cron_list`):
-
-            Scheduled Jobs:  -----
-              ID: abc        Name: nightly-backup
-              State: active
-              Schedule: 0 3 * * * (daily)
-              Next run: 2026-09-23T03:00:00
-
-        The FIRST implementation of this parser was written against an invented
-        `NAME SCHEDULE NEXT RUN STATUS` table and reported `Schedule:` as every
-        job's name. That fixture matched the parser, not the CLI, so the tests
-        passed while the feature was broken.
+        The fixture is NOT hand-written: it is the output of the CLI's own
+        `cron_list` / `_job_rows` / `_print_banner` functions from
+        hermes_cli/cron.py, rendered with synthetic in-memory job dicts. Two
+        earlier versions of this parser were written against a shape that did not
+        exist — first an invented table, then the *slash-command* formatter in
+        cli_commands_mixin — and both times a hand-built fixture agreed with the
+        parser instead of with the CLI, so the tests passed while every user with
+        jobs saw an empty section.
         """
-        import importlib.machinery
-        import importlib.util
-
-        loader = importlib.machinery.SourceFileLoader("deck_collect", str(COLLECT))
-        spec = importlib.util.spec_from_loader("deck_collect", loader)
-        module = importlib.util.module_from_spec(spec)
-        loader.exec_module(module)
-        parse = module.parse_cron_list
-
-        real = (
-            "Scheduled Jobs:  " + "-" * 40 + "\n"
-            "  ID: a1b2c3d4        Name: nightly-backup\n"
-            "  State: active\n"
-            "  Schedule: 0 3 * * * (daily)\n"
-            "  Next run: 2026-09-23T03:00:00\n"
-            "  Prompt: back up the vault\n"
-            "\n"
-            "  ID: e5f6a7b8        Name: weekly-digest\n"
-            "  State: paused\n"
-            "  Schedule: 0 9 * * 1 (weekly)\n"
-            "  Next run: 2026-09-28T09:00:00\n"
-            "  Prompt: summarize the week\n"
-            "\n"
-        )
-        jobs = parse(real)
+        parse = self._collect_module().parse_cron_list
+        jobs = parse(self.CRON_FIXTURE.read_text(encoding="utf-8"))
         self.assertEqual([j["name"] for j in jobs], ["nightly-backup", "weekly-digest"],
                          f"wrong names parsed: {jobs!r}")
         self.assertEqual(jobs[0]["schedule"], "0 3 * * *")
-        self.assertFalse(jobs[0]["paused"])
-        self.assertTrue(jobs[1]["paused"], "the paused state was not read")
+        self.assertEqual(jobs[1]["schedule"], "0 9 * * 1")
+        self.assertFalse(jobs[0]["paused"], "an [active] job reported as paused")
+        self.assertTrue(jobs[1]["paused"], "the [paused] badge was not read")
 
-    def test_cron_parser_never_reports_a_label_as_a_name(self) -> None:
-        """A regression guard for the exact bug that shipped: 'Schedule:' as name."""
-        import importlib.machinery
-        import importlib.util
+    def test_cron_parser_ignores_the_banner(self) -> None:
+        """The box-drawing banner is not a job."""
+        parse = self._collect_module().parse_cron_list
+        for job in parse(self.CRON_FIXTURE.read_text(encoding="utf-8")):
+            self.assertNotIn("─", job["name"])
 
-        loader = importlib.machinery.SourceFileLoader("deck_collect", str(COLLECT))
-        spec = importlib.util.spec_from_loader("deck_collect", loader)
-        module = importlib.util.module_from_spec(spec)
-        loader.exec_module(module)
+    def test_cron_badge_vocabulary_is_the_real_one(self) -> None:
+        """Badges are `[active]`/`[paused]`/`[completed]`/`[disabled]`.
 
-        real = (
-            "  ID: x1        Name: real-job\n"
-            "  State: active\n"
-            "  Schedule: 0 3 * * * (daily)\n"
-        )
-        for job in module.parse_cron_list(real):
-            self.assertNotIn(job["name"].rstrip(":"),
-                             {"Schedule", "State", "Next", "ID", "Prompt", "Name", "Last"},
-                             f"a field label leaked into the job name: {job!r}")
+        `effective_job_state` returns `scheduled` for an enabled job (not
+        `active`), and `cron_list` maps that to the `[active]` badge. An earlier
+        version tested for the literal string "active" in the state field, which
+        is a vocabulary the source never produces there.
+        """
+        parse = self._collect_module().parse_cron_list
+        for badge, paused in (("[active]", False), ("[paused]", True),
+                              ("[completed]", True), ("[disabled]", True)):
+            with self.subTest(badge):
+                source = f"  abc123 {badge}\n    Name:      job\n    Schedule:  0 1 * * *\n"
+                jobs = parse(source)
+                self.assertEqual(len(jobs), 1, f"job not parsed for {badge}: {jobs!r}")
+                self.assertEqual(jobs[0]["paused"], paused,
+                                 f"{badge} mis-derived as paused={jobs[0]['paused']}")
+                self.assertEqual(jobs[0]["name"], "job")
+
+    def test_no_field_label_ever_becomes_a_job_name(self) -> None:
+        """A guard for the bug class: a label must never be read as a value."""
+        parse = self._collect_module().parse_cron_list
+        labels = {"Schedule", "State", "Next", "Repeat", "Deliver", "Prompt",
+                  "Name", "Last", "Skills", "Script", "Monitor", "Changed",
+                  "Mode", "Workdir", "Dispatch", "Execution", "ID"}
+        for source in (self.CRON_FIXTURE.read_text(encoding="utf-8"),
+                       "  abc123 [active]\n    Name:  real-job\n    Schedule:  0 3 * * *\n"):
+            for job in parse(source):
+                self.assertNotIn(job["name"].rstrip(":"), labels,
+                                 f"a field label leaked into the job name: {job!r}")
 
     def test_cron_parser_survives_hostile_input(self) -> None:
         """No input may raise: a raise here blanks the whole panel."""

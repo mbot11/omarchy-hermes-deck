@@ -181,9 +181,84 @@ class TestTildePaths(unittest.TestCase):
                                  f"prose tilde reported: {line!r}")
 
 
+def _has_pillow() -> bool:
+    """Pillow is needed to synthesise a PNG for the integration check."""
+    try:
+        import PIL  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _png_with_chunk(kind: bytes, body: bytes) -> bytes:
+    """A minimal valid PNG carrying one extra text chunk.
+
+    `chunk()`'s first argument is the CHUNK TYPE, not a pre-built body: passing
+    a body here produces a chunk whose declared length is wrong, which the parser
+    then reads as a truncated string. Getting this backwards made a working
+    parser look broken during review, so it is a helper with a name now.
+    """
+    import struct
+    import zlib
+
+    png = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+        "0000000a49444154789c6360000002000100ffff03000006000557bfabd4000000"
+        "0049454e44ae426082"
+    )
+
+    def chunk(chunk_kind: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + chunk_kind + data
+                + struct.pack(">I", zlib.crc32(chunk_kind + data) & 0xFFFFFFFF))
+
+    offset = png.index(b"IDAT") - 4
+    return png[:offset] + chunk(kind, body) + png[offset:]
+
+
+class TestCompressedTextChunks(unittest.TestCase):
+    """A secret inside a COMPRESSED chunk must be readable without Pillow.
+
+    The scanner stored the literal `<zTXt>` for a compressed chunk and exempted
+    that value from the identifying-metadata finding, so on a runner without
+    Pillow a credential inside a zTXt chunk produced CLEAN — the gate failed
+    open. It now decompresses with the stdlib and reports any chunk it cannot
+    decode as a finding rather than treating it as absent.
+    """
+
+    SECRET = "api_key = sk-live-abcdefghijklmnop"
+
+    def test_zTXt_secret_is_read_without_pillow(self):
+        import zlib
+
+        body = b"Comment\x00\x00" + zlib.compress(self.SECRET.encode())
+        data = _png_with_chunk(b"zTXt", body)
+        chunks = cis.png_text_chunks(data)
+        self.assertIn("Comment", chunks, f"zTXt chunk not extracted: {chunks!r}")
+        self.assertIn("sk-live", chunks["Comment"],
+                      f"compressed text not decompressed: {chunks!r}")
+
+    def test_undecodable_chunk_is_a_finding_not_an_exemption(self):
+        data = _png_with_chunk(b"zTXt", b"Comment\x00\x00not-deflate-data")
+        chunks = cis.png_text_chunks(data)
+        self.assertTrue(chunks.get("Comment", "").startswith("<undecodable"),
+                        f"a corrupt chunk should be flagged: {chunks!r}")
+
+    def test_uncompressed_tEXt_still_read(self):
+        data = _png_with_chunk(b"tEXt", b"Comment\x00" + self.SECRET.encode())
+        chunks = cis.png_text_chunks(data)
+        self.assertIn("sk-live", chunks.get("Comment", ""),
+                      f"tEXt not read: {chunks!r}")
+
+
 class TestLeakDetectors(unittest.TestCase):
     """The exemption is exercised through audit_image, not just scan_text."""
 
+    @unittest.skipUnless(
+        _has_pillow(),
+        "Pillow is required for this integration check and CI installs it "
+        "(python3-pil). If this skips, the leak-detector integration path has NO "
+        "coverage — a skip is a gap, not a pass.",
+    )
     def test_comment_mentioning_pngquant_still_reports_the_author(self):
         import struct
         import tempfile

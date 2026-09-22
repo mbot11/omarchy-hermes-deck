@@ -223,21 +223,33 @@ class ActTests(unittest.TestCase):
         output = self.run_act().stderr.decode() + self.run_act().stdout.decode()
         self.assertNotIn("archive-session", output)
 
-    def test_stub_rejects_a_positional_id_for_bulk_archive(self) -> None:
-        """Guard the guard: the fixture must fail the way the real CLI does."""
-        result = subprocess.run(
-            [str(STUB_BIN / "hermes"), "sessions", "archive", "sess-abc"],
-            capture_output=True,
-        )
-        self.assertEqual(result.returncode, 2,
-                         "stub accepted a positional id that the real CLI rejects")
+    # Measured against the real CLI: (argv, expected exit code).
+    ARCHIVE_CONTRACT = [
+        ([], 0),                                       # refuses, but exits 0
+        (["--dry-run"], 0),                            # --dry-run is not a filter
+        (["--older-than"], 2),                         # flag with no value
+        (["--older-than", "30d"], 0),
+        (["--yes", "--older-than", "30d"], 0),          # --yes is value-less
+        (["--title=foo"], 0),                          # --flag=value form
+        (["sess-abc"], 2),                             # positional id rejected
+        (["--include-pinned", "--older-than", "30d"], 2),  # not an archive flag
+    ]
 
-    def test_stub_accepts_bulk_archive_filters(self) -> None:
-        result = subprocess.run(
-            [str(STUB_BIN / "hermes"), "sessions", "archive", "--older-than", "30d"],
-            capture_output=True,
-        )
-        self.assertEqual(result.returncode, 0)
+    def test_stub_models_the_real_archive_contract(self) -> None:
+        """Guard the guard: the fixture must fail exactly where the CLI does.
+
+        An earlier stub assumed every `--flag` consumes a value, which certified
+        argv shapes the real CLI rejects and rejected one it accepts. These cases
+        were measured against `hermes sessions archive` on this machine.
+        """
+        for argv, expected in self.ARCHIVE_CONTRACT:
+            with self.subTest(argv):
+                result = subprocess.run(
+                    [str(STUB_BIN / "hermes"), "sessions", "archive", *argv],
+                    capture_output=True, timeout=20, stdin=subprocess.DEVNULL,
+                )
+                self.assertEqual(result.returncode, expected,
+                                 f"stub disagrees with the real CLI for {argv}")
 
 
 if __name__ == "__main__":

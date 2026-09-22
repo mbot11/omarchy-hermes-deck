@@ -21,7 +21,8 @@ function load() {
   // line writes to a null.
   const context = {};
   vm.createContext(context);
-  vm.runInContext(code + "\n;globalThis.__deck = { emptyState, accept, cronSummary };",
+  vm.runInContext(
+    code + "\n;globalThis.__deck = { emptyState, accept, cronSummary, deckState };",
     context);
   return context.__deck;
 }
@@ -117,6 +118,24 @@ const afterEmpty = deck.accept(
   withJobs.cron,
 );
 check("an explicit empty list is honoured, not retained", afterEmpty.cron.length, 0);
+
+// ── the emergency stop must survive accept() ───────────────────────────────
+// `accept` copies only keys present in `emptyState()`. `paused` was absent from
+// that template, so it was dropped from every snapshot and the ESTOP banner, the
+// pause/resume button label and the paused notifications were all dead code.
+console.log("emergency stop survives accept");
+const estop = deck.accept(JSON.stringify({
+  schemaVersion: 2, id: "hermes-deck", installed: true,
+  paused: true, reason: "deploy window",
+  gateway: { serviceState: "active", enabled: "enabled", connectedPlatforms: [], activeAgentsCount: 0 },
+}));
+check("paused is carried", estop.paused, true);
+check("deckState reports paused", deck.deckState(estop), "paused");
+check("reason is carried", estop.reason, "deploy window");
+
+const notPaused = deck.accept(JSON.stringify({ schemaVersion: 2, id: "hermes-deck", installed: true }));
+check("absent paused defaults to false", notPaused.paused, false);
+check("deckState is not paused", deck.deckState(notPaused), "gatewayDown");
 
 // ── cronSummary: what the panel header renders ─────────────────────────────
 console.log("cronSummary");

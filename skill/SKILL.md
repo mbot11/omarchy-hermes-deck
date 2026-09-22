@@ -38,8 +38,10 @@ python3 tests/test_collect.py        # from the repository checkout
 `{working, lastMessageAt, secondsSinceLastMessage}`, `usage`
 `{today, week, month, byModelToday}`, `sessions[]`, `auth[]`,
 `kanban` `{available, boards[]}`, `search` `{query, results[], totalHits}`,
-`errors[]`, and `cron[]` `{name, schedule, paused, running}` — absent
-unless `--include-inventory` was passed.
+`errors[]`, and `cron[]` `{name, schedule, paused}` — present in EVERY
+snapshot. `--include-inventory` refreshes it from `hermes cron list`; without
+that flag it carries the last known list from the on-disk cache, so the panel's
+Cron section does not blink out between refreshes.
 
 Rules that must not regress:
 
@@ -56,13 +58,16 @@ Rules that must not regress:
   `messages_fts` has exactly one column — any other index is a hard
   "column index out of range" error. A malformed query degrades the section.
 - `--include-inventory` spawns `hermes cron list`, so it only runs on an
-  explicit inventory request. That command has **no `--json`**, so its output is
-  parsed as text — and the real format is a LABEL BLOCK per job
-  (`  ID: x   Name: y` / `  State: z` / `  Schedule: s`), NOT a table. An earlier
-  parser expected an invented table and reported `Schedule:` as every job's
-  name; the fixture matched the parser rather than the CLI, so its tests passed
-  while the panel showed no names. There is also no `toggle` subcommand —
-  pausing is `pause`/`resume`.
+  explicit inventory request. That command has **no `--json`**. The real format
+  comes from `cron_list` in **hermes_cli/cron.py** — beware: the similarly named
+  `_cron_list` in hermes_cli/cli_commands_mixin.py is the *slash-command* path
+  and prints a DIFFERENT shape. `hermes cron list` prints a boxed banner, then
+  `  <id> [<badge>]` with indented `    Name:` / `    Schedule:` rows; badges are
+  `[active]`/`[paused]`/`[completed]`/`[disabled]`. Two successive parsers were
+  written against the wrong shape and both times a hand-written fixture agreed
+  with the parser instead of the CLI, so the tests passed while every user with
+  jobs saw an empty section. The fixture is now the CLI's own output, generated,
+  never typed. There is also no `toggle` subcommand — pausing is `pause`/`resume`.
 - `cron` is present in EVERY snapshot. The fast path fills it from the on-disk
   cache (no subprocess, so the no-spawn invariant holds) and the inventory path
   refreshes it. It must not be omitted on the fast path: the consumer would see

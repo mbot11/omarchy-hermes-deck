@@ -20,6 +20,11 @@ function emptyState() {
     auth: [],
     kanban: { available: false, boards: [] },
     search: { query: "", results: [], totalHits: 0 },
+    // `paused` is the emergency stop. It MUST be declared here: `accept` copies
+    // only keys already present in this template, so a field missing from it is
+    // silently dropped from every snapshot — which is what made the ESTOP banner,
+    // the pause/resume button label and the paused notifications all dead code.
+    paused: false,
     cron: [],
     errors: []
   }
@@ -36,13 +41,6 @@ function accept(raw, previousCron) {
   var state = emptyState()
   for (var key in state)
     if (parsed[key] !== undefined) state[key] = parsed[key]
-  // An absent `cron` key means "no inventory in this payload" (an older
-  // collector, a truncated payload, or a fast tick before any refresh), which
-  // is NOT the same fact as "there are no jobs". Carry the caller's last known
-  // list forward, or the panel's Cron section would be erased on every tick
-  // that does not happen to carry inventory.
-  if (parsed.cron === undefined)
-    state.cron = Array.isArray(previousCron) ? previousCron : []
   if (!state.gateway || typeof state.gateway !== "object") {
     state.gateway = { serviceState: "unknown", enabled: "unknown", connectedPlatforms: [], activeAgentsCount: 0 }
   } else {
@@ -55,14 +53,12 @@ function accept(raw, previousCron) {
   if (!Array.isArray(state.sessions)) state.sessions = []
   if (!Array.isArray(state.auth)) state.auth = []
   if (!state.kanban || typeof state.kanban !== "object") state.kanban = { available: false, boards: [] }
-  // Inventory arrives only when the collector was asked for it (opt-in flag).
-  // The collector always sends the key, but an older collector or a truncated
-  // payload might not — and the caller passes the PREVIOUS state's cron in that
-  // case rather than resetting to empty. Resetting would erase the section on
-  // every fast tick, since inventory is only fetched on the slow one.
-  var previousCron = arguments.length > 1 && Array.isArray(arguments[1]) ? arguments[1] : []
-  if (!Array.isArray(state.cron)) {
-    state.cron = previousCron
+  // Inventory is only refreshed on the slow tick, so an absent or malformed
+  // `cron` must carry the caller's last known list forward rather than reset to
+  // empty — resetting erased the panel's Cron section on every fast tick. An
+  // explicitly empty array IS the real fact "no jobs" and is preserved.
+  if (!Array.isArray(parsed.cron)) {
+    state.cron = Array.isArray(previousCron) ? previousCron : []
   } else {
     var jobs = []
     for (var j = 0; j < state.cron.length; j++) {

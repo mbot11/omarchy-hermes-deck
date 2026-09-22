@@ -25,7 +25,10 @@ jobs:
 
       - name: Image audit (metadata and pixels)
         run: |
-          sudo apt-get install -y -qq tesseract-ocr >/dev/null
+          # Pillow is REQUIRED, not optional: without it the audit cannot read
+          # compressed zTXt/iTXt PNG chunks or EXIF, and it used to fail OPEN on
+          # credential-bearing images. The integration test needs it too.
+          sudo apt-get install -y -qq tesseract-ocr python3-pil >/dev/null
           python3 tests/check-image-safety.py --self-test
           mapfile -t IMAGES < <(git ls-files | grep -iE '\.(png|jpe?g|webp|avif|gif)$')
           if [ "${#IMAGES[@]}" -gt 0 ]; then

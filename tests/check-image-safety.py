@@ -108,6 +108,25 @@ OCR_TIMEOUT_SECONDS = 60
 MAX_IMAGE_BYTES = 64 * 1024 * 1024
 
 
+def _inflate(blob: bytes) -> str:
+    """Decompress a zlib stream from a PNG text chunk.
+
+    Done with the stdlib rather than Pillow so that a compressed chunk is
+    readable even where Pillow is not installed. This matters: an earlier
+    version stored the literal `<zTXt>` and then exempted that field from the
+    identifying-metadata finding, so a credential inside a compressed chunk
+    produced a CLEAN verdict — the gate failed open on the CI runner.
+    """
+    import zlib
+
+    try:
+        return zlib.decompress(blob).decode("utf-8", "replace")
+    except (zlib.error, ValueError, TypeError):
+        # Undecodable is not the same as empty. Say so, so this cannot pass for
+        # a chunk that merely had no text in it.
+        return "<undecodable compressed text chunk>"
+
+
 def png_text_chunks(data: bytes) -> dict[str, str]:
     """Pull tEXt/zTXt/iTXt chunks out of a PNG without a decoder.
 
@@ -125,9 +144,22 @@ def png_text_chunks(data: bytes) -> dict[str, str]:
         if kind == b"tEXt":
             key, _, value = body.partition(b"\x00")
             out[key.decode("latin-1", "replace")] = value.decode("latin-1", "replace")
-        elif kind in (b"zTXt", b"iTXt"):
-            key = body.split(b"\x00", 1)[0].decode("latin-1", "replace")
-            out[key] = f"<{kind.decode()}>"
+        elif kind == b"zTXt":
+            # zTXt = keyword \x00 compression_method \x00 deflate(data)
+            key, _, rest = body.partition(b"\x00")
+            _, _, compressed = rest.partition(b"\x00")
+            out[key.decode("latin-1", "replace")] = _inflate(compressed)
+        elif kind == b"iTXt":
+            # iTXt = keyword \x00 compression_flag compression_method \x00
+            #        language \x00 translated_keyword \x00 text
+            parts = body.split(b"\x00", 5)
+            key = parts[0].decode("latin-1", "replace")
+            if len(parts) >= 6 and parts[1] == b"\x01":
+                out[key] = _inflate(parts[5])
+            elif len(parts) >= 6:
+                out[key] = parts[5].decode("utf-8", "replace")
+            else:
+                out[key] = f"<{kind.decode()}>"
         if kind == b"IEND":
             break
         offset += 12 + length
@@ -218,7 +250,12 @@ def audit_image(path: Path, explain: bool = False) -> list[tuple[str, str, str]]
         # A metadata value is itself text: run the same shapes over it.
         for origin, label, detail in scan_text(value, f"metadata:{key}"):
             findings.append((origin, label, detail))
-        if interesting and not PLACEHOLDER_VALUE.match(value):
+        # A compressed chunk we could not decode is a finding in its own right:
+        # we cannot vouch for text we could not read, and treating it as absent
+        # is exactly how the gate failed open before.
+        if value.startswith("<undecodable"):
+            findings.append((f"metadata:{key}", "unreadable compressed metadata", value[:110]))
+        elif interesting and not PLACEHOLDER_VALUE.match(value):
             findings.append((f"metadata:{key}", "identifying metadata field", value[:110]))
 
     text = ocr_text(path)

@@ -590,26 +590,33 @@ def parse_cron_list(text) -> list:
     """Parse `hermes cron list` into jobs.
 
     `hermes cron list` has no --json, so this reads the printed text. The real
-    format is a LABEL BLOCK per job, not a table, and not column-aligned beyond
-    the first pair:
+    format comes from `cron_list` in hermes_cli/cron.py:
 
-        Scheduled Jobs:  ----------------------------------------
-          ID: a1b2c3d4        Name: nightly-backup
-          State: active
-          Schedule: 0 3 * * * (daily)
-          Next run: 2026-09-23T03:00:00
-          Prompt: back up the vault
+        ┌─────...─────┐
+        │   Scheduled Jobs   │
+        └─────...─────┘
 
-    Verified against the installed CLI's formatter (hermes_cli/cli_commands_mixin,
-    `_cron_list`). An earlier version of this function expected an invented
-    `NAME SCHEDULE NEXT RUN STATUS` table and therefore reported `Schedule:` as
-    every job's name — the fixture matched the parser instead of the CLI, so its
-    tests passed while the panel showed no job names at all.
+          182cc80c63f6 [active]
+            Name:      nightly-backup
+            Schedule:  0 3 * * *
+            Repeat:    ∞
+            Next run:  2026-09-23T03:00:00
+            Deliver:   local
 
-    Every value is taken from its own label, so a numeric Next-run or a job whose
-    name contains `paused` cannot corrupt the fields. Any input at all is
-    accepted: this returns a list or an empty list, never raises, because a raise
-    on the inventory path would blank the whole panel.
+    A job starts with `  <id> [<badge>]`; its fields are indented further and
+    each is `   <Label>:  <value>`. The badge is one of `[active]`, `[paused]`,
+    `[completed]`, `[disabled]`.
+
+    This function has now been wrong twice, so read before changing it. The
+    first version expected an invented `NAME SCHEDULE ...` table; the second
+    expected the *slash-command* formatter in cli_commands_mixin, which is a
+    different code path with a different shape. Both times a hand-written
+    fixture agreed with the parser instead of with the CLI, so the tests passed
+    while every user with jobs saw an empty section. The fixture used by the
+    tests is the output of the CLI's own functions, not something typed by hand.
+
+    Any input at all is accepted: this returns a list or an empty list, never
+    raises, because a raise on the inventory path would blank the whole panel.
     """
     if not isinstance(text, str):
         return []
@@ -621,34 +628,45 @@ def parse_cron_list(text) -> list:
             jobs.append({
                 "name": clip(job["name"], 120),
                 "schedule": clip(job.get("schedule", ""), 40),
-                # State is its own field: `paused` and `completed` are the
-                # non-running states the CLI reports.
-                "paused": job.get("state", "").lower() in {"paused", "completed"},
-                "running": job.get("state", "").lower() in {"active", "running"},
+                # `paused` covers every non-firing badge the CLI can print. An
+                # active job shows [active]; a job waiting on its first fire
+                # shows [scheduled]. Anything else means it is not running.
+                # Only `paused` is exposed. `running` was emitted too and no
+                # consumer ever read it, so it was deleted rather than left as a
+                # field that looks meaningful and is not.
+                "paused": job.get("badge", "") in {"paused", "completed", "disabled"},
             })
 
     for line in text.splitlines():
         row = line.strip()
         if not row:
             continue
-        # `ID: ... Name: ...` starts a job. Both labels can share a line.
-        match = re.match(r"^ID:\s*(\S+)(?:\s+Name:\s*(.+?))?$", row)
-        if match:
+        # A job header:  <id> [<badge>]  — the id is hex-ish and badge bracketed.
+        header = re.match(r"^(\S+)\s+\[(\w+)\]$", row)
+        if header:
             flush(current)
-            current = {"id": match.group(1), "name": (match.group(2) or "").strip()}
+            current = {
+                "id": header.group(1),
+                "badge": header.group(2).lower(),
+                "name": "",
+                "schedule": "",
+            }
             continue
         if current is None:
-            continue  # header, separator, or the empty-state message
-        if row.startswith("Name:"):
-            current["name"] = row[len("Name:"):].strip()
-        elif row.startswith("State:"):
-            current["state"] = row[len("State:"):].strip()
-        elif row.startswith("Schedule:"):
-            # Strip the trailing "(daily)" repeat hint the CLI appends.
-            current["schedule"] = re.sub(r"\s*\([^)]*\)\s*$", "",
-                                         row[len("Schedule:"):].strip())
-        # Next run / Prompt / Last run / Skills are deliberately ignored: none
-        # is needed by the panel and each is free text that could carry anything.
+            continue  # the banner, before the first job
+        # A field row:   Label:  value   (labels are right-padded to 11 chars,
+        # so there are two or more spaces after the colon).
+        field = re.match(r"^([A-Za-z][A-Za-z ]*?):\s+(.*)$", row)
+        if not field:
+            continue
+        label, value = field.group(1), field.group(2).strip()
+        if label == "Name":
+            current["name"] = value
+        elif label == "Schedule":
+            current["schedule"] = value
+        # Every other label (Repeat, Next run, Deliver, Last run, Skills, …) is
+        # deliberately ignored: the panel needs none of them and each is free
+        # text that could carry anything.
     flush(current)
     return jobs[:50]
 

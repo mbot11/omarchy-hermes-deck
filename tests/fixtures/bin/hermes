@@ -43,53 +43,72 @@ EOF
       pin | unpin) exit 0 ;;
       rename) [[ -n ${3:-} && -n ${4:-} ]] && exit 0; exit 64 ;;
       # `archive` is bulk-only: the real CLI takes NO positional session id and
-      # rejects one outright (exit 2, "unrecognized arguments"). The stub mirrors
-      # that, so a future caller that passes an id is caught here rather than in
-      # production. `delete` is the subcommand that does take a positional id.
+      # rejects one outright ("unrecognized arguments", exit 2). It also refuses
+      # to run without at least one FILTER, and only --yes/--dry-run are value-less
+      # flags — every other flag consumes the next token. Modelled on the real
+      # argparse definition in hermes_cli/subcommands/sessions.py; an earlier stub
+      # assumed every --flag takes a value, which certified argv shapes the real
+      # CLI rejects and rejected one it accepts.
       archive)
-        # Walk the args, skipping the value of each --flag. A bare token that is
-        # not consumed as a flag value is a positional id, which must fail.
+        VALUE_FLAGS=' --older-than --newer-than --before --after --source --title
+          --end-reason --cwd --min-messages --max-messages --model --provider
+          --user --chat-id --chat-type --branch --min-tokens --max-tokens
+          --min-cost --max-cost --min-tool-calls --max-tool-calls '
         args=("${@:3}")
-        i=0
+        i=0; filters=0
         while (( i < ${#args[@]} )); do
-          if [[ ${args[i]} == --* ]]; then
-            if [[ ${args[i]} == *=* ]]; then
-              i=$((i + 1))          # --flag=value carries its own value
-            else
-              i=$((i + 2))          # --flag value
-            fi
-          else
-            exit 2                  # bare positional id -> unrecognized
-          fi
+          a=${args[i]}
+          case $a in
+            --yes|--dry-run) i=$((i + 1)) ;;            # value-less
+            *=*) filters=$((filters + 1)); i=$((i + 1)) ;;   # --flag=value
+            *)
+              if [[ $VALUE_FLAGS == *" $a "* ]]; then
+                (( i + 1 < ${#args[@]} )) || exit 2       # flag needs a value
+                filters=$((filters + 1)); i=$((i + 2))
+              else
+                exit 2                                   # positional or unknown flag
+              fi
+              ;;
+          esac
         done
+        # Measured: the real CLI prints the refusal to STDOUT and still exits 0.
+        # Only a malformed argv (unknown flag, positional, or a flag with no
+        # value) exits 2 from argparse.
+        (( filters > 0 )) || echo "Refusing to archive every ended session: pass at least one filter"
         exit 0 ;;
       delete) [[ -n ${3:-} ]] && exit 0; exit 64 ;;
       *) exit 64 ;;
     esac
     ;;
   cron)
-    # `hermes cron list` has no --json. The stub reproduces the REAL format,
-    # copied from the installed CLI's own formatter (hermes_cli/cli_commands_mixin,
-    # `_cron_list`): a label block per job, NOT a column-aligned table. The first
-    # version of this stub invented a table, which made a broken parser look
-    # correct.
+    # `hermes cron list` has no --json. The stub emits the REAL format, kept in
+    # tests/fixtures/hermes-cron-list.txt — which is not hand-written but
+    # rendered by the CLI's own cron_list/_job_rows/_print_banner functions.
+    # An earlier stub invented a table, which made a broken parser look correct.
     case "${2:-}" in
       list)
-        cat <<'EOF'
-Scheduled Jobs:  --------------------------------------------------------------------------------
-  ID: a1b2c3d4        Name: nightly-backup
-  State: active
-  Schedule: 0 3 * * * (daily)
-  Next run: 2026-09-23T03:00:00
-  Prompt: back up the vault
+        cat <<'HERMES_CRON_EOF'
 
-  ID: e5f6a7b8        Name: weekly-digest
-  State: paused
-  Schedule: 0 9 * * 1 (weekly)
-  Next run: 2026-09-28T09:00:00
-  Prompt: summarize the week
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         Scheduled Jobs                                  │
+└─────────────────────────────────────────────────────────────────────────┘
 
-EOF
+  182cc80c63f6 [active]
+    Name:      nightly-backup
+    Schedule:  0 3 * * *
+    Repeat:    ∞
+    Next run:  2026-09-23T03:00:00
+    Deliver:   local
+    Last run:  2026-09-22T03:00:00  ok
+
+  aabbccddeeff [paused]
+    Name:      weekly-digest
+    Schedule:  0 9 * * 1
+    Repeat:    ∞
+    Next run:  -
+    Deliver:   local
+
+HERMES_CRON_EOF
         ;;
       pause | resume | run) exit 0 ;;
       *) exit 64 ;;
