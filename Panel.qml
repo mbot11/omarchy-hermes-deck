@@ -823,16 +823,34 @@ Panel {
                 }
                 Item {
                   height: 1
-                  width: Math.max(0, parent.width - parent.children[0].implicitWidth - parent.children[1].implicitWidth - Style.space(16))
+                  // Subtract EVERY other child, not just the first two. With the
+                  // schedule as child[3] the old expression (children[0] +
+                  // children[1]) left this spacer occupying the rest of the row,
+                  // which pushed the schedule past the right edge — the row
+                  // rendered as "● name" and the schedule was never visible.
+                  width: {
+                    var used = Style.space(0)
+                    var kids = parent.children
+                    for (var i = 0; i < kids.length; i++) {
+                      if (kids[i] !== this)
+                        used += kids[i].implicitWidth + parent.spacing
+                    }
+                    return Math.max(Style.space(4), parent.width - used)
+                  }
                 }
                 Text {
-                  // Per-row state, not the section summary: the summary used to be
-                  // rendered here, which repeated the same string on every row.
-                  text: modelData.paused ? "paused" : "active"
+                  // The SCHEDULE, which is what a job row is actually for — the
+                  // README promised it and the collector already sends it, but
+                  // this cell rendered "active"/"paused" instead, repeating state
+                  // the ⏸/● marker, the dimmed colour and the section summary
+                  // ("2 jobs, 1 paused") all already convey. Verified live against
+                  // two real jobs, one active and one paused.
+                  text: String(modelData.schedule || "")
                   textFormat: Text.PlainText
-                  color: Qt.darker(root.bar.foreground, 1.4)
+                  color: Qt.darker(root.bar.foreground, 1.6)
                   font.family: root.bar.fontFamily
                   font.pixelSize: Style.font.bodySmall
+                  horizontalAlignment: Text.AlignRight
                 }
               }
             }

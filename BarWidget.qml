@@ -192,7 +192,13 @@ BarWidget {
         color: "transparent"
         border.width: 2
         border.color: root.stateColor
-        opacity: root.working ? haloPulse.pulseOpacity : 0
+        // `pulseOpacity` is declared on THIS Rectangle and animated by the
+        // haloPulse SequentialAnimation below (which targets pulseHalo with
+        // property "pulseOpacity"). Reading it from `haloPulse` — the animation
+        // itself — resolved to undefined, so the binding failed with "Unable to
+        // assign [undefined] to double" and the documented cyan pulse-while-working
+        // halo never appeared.
+        opacity: root.working ? pulseHalo.pulseOpacity : 0
         property real pulseOpacity: root.working ? 1 : 0
         Behavior on border.color {
           ColorAnimation {

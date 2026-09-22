@@ -168,5 +168,28 @@ check("tolerates a non-list", deck.cronSummary(undefined), { total: 0, paused: 0
 check("tolerates junk entries", deck.cronSummary([null, { paused: true }]),
   { total: 1, paused: 1 });
 
+// ── Cron: the shape the CRON ROWS depend on ───────────────────────────────
+// A job row renders `modelData.schedule`. Two real jobs were created on the
+// machine to verify this live (one active, one paused) — and the first live run
+// showed blank schedules because the row rendered "active"/"paused" instead,
+// repeating state the marker, colour and section summary already conveyed. These
+// assertions pin the field the row needs, through the real accept() path.
+console.log("cron rows keep the schedule the panel renders");
+const cronDeck = deck.accept(JSON.stringify({
+  schemaVersion: 2, id: "hermes-deck",
+  cron: [{ name: "deck-visual-test", schedule: "0 3 * * *", paused: false },
+         { name: "deck-paused-test", schedule: "30 4 * * *", paused: true }],
+}));
+check("both jobs survive accept", cronDeck.cron.length, 2);
+check("an active job keeps its schedule",
+  cronDeck.cron[0].schedule, "0 3 * * *");
+check("a paused job keeps its name",
+  cronDeck.cron[1].name, "deck-paused-test");
+check("a paused job keeps its schedule",
+  cronDeck.cron[1].schedule, "30 4 * * *");
+check("the paused flag survives", cronDeck.cron[1].paused, true);
+check("the summary counts both and the paused one",
+  deck.cronSummary(cronDeck.cron), { total: 2, paused: 1 });
+
 console.log(`\n${failures === 0 ? "PASS" : "FAILED"} (${failures} failure(s))`);
 process.exit(failures === 0 ? 0 : 1);
