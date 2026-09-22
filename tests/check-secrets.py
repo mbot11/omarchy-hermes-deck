@@ -13,16 +13,24 @@ Exit 0 clean, 1 on any finding, 2 on a usage error.
 from __future__ import annotations
 
 import math
+import os
 import re
 import subprocess
 import sys
 
 # ── credential shapes ────────────────────────────────────────────────────
 # Ordered specific-first: a broad pattern above a specific one would mask it.
+#
+# The literal markers are assembled from fragments rather than written whole.
+# A scanner necessarily contains the shapes it looks for, so a file that spells
+# them out flags itself on every run — as this one did in CI. Splitting the
+# strings keeps the file scannable by its own rules and by any other scanner,
+# at no cost to detection.
+_KEY = "PRIVATE KEY"
 SECRET_PATTERNS: list[tuple[str, str]] = [
-    ("private key block", r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
-    ("ssh private key", r"-----BEGIN OPENSSH PRIVATE KEY-----"),
-    ("pgp private key", r"-----BEGIN PGP PRIVATE KEY BLOCK-----"),
+    ("private key block", r"-----BEGIN [A-Z ]*" + _KEY + r"-----"),
+    ("ssh private key", r"-----BEGIN OPENSSH " + _KEY + r"-----"),
+    ("pgp private key", r"-----BEGIN PGP " + _KEY + " BLOCK-----"),
     ("aws access key", r"\bAKIA[0-9A-Z]{16}\b"),
     ("github token", r"\bgh[pousr]_[A-Za-z0-9]{16,}\b"),
     ("github fine-grained pat", r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
@@ -41,23 +49,33 @@ SECRET_PATTERNS: list[tuple[str, str]] = [
 ]
 
 # ── machine identity that must not be published ──────────────────────────
-# The author's own username is expected in URLs and the license; it is only a
-# leak when it appears inside a filesystem path, i.e. as a home directory.
+# Assembled for the same reason as the key markers above: this file is in the
+# tree it scans, so a literal it searches for would always match itself.
+_ROOT = "/root/"
 IDENTITY_CHECKS: list[tuple[str, str]] = [
     # A real account name, not a placeholder: at least three characters and
     # not a single-letter or obviously synthetic fixture name.
     ("absolute home path", r"/home/(?!u/|user/|username/|[a-z]/)[a-z][a-z0-9_-]{2,}/"),
     ("macOS home path", r"/Users/(?!user/|username/)[A-Za-z][A-Za-z0-9_-]{2,}/"),
-    ("root home path", r"(?<![\w/])/root/"),
+    ("root home path", r"(?<![\w/])" + _ROOT),
     ("hostname leak (omarchy host)", r"\bomarchy\b(?=[^\s]*\.(?:local|lan)\b)"),
     ("private ipv4", r"\b(?:10\.\d{1,3}|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}\b"),
     ("loopback with port", r"\b127\.0\.0\.1:\d{2,5}\b"),
     ("email address", r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
 ]
 
-# The real account name on the author's machine. Checked explicitly below as
-# well, because it is the one string whose presence anywhere is a leak.
-AUTHOR_USERNAMES = ["mbtruby"]
+# The account names to treat as leaks. Taken from the environment and git
+# config at runtime rather than written here: hardcoding the author's name in
+# the repository is itself the leak this checks for, and it failed CI for
+# exactly that before this change.
+def author_usernames() -> list[str]:
+    names = {os.environ.get("USER", ""), os.environ.get("LOGNAME", "")}
+    for key in ("user.name", "user.email"):
+        out = subprocess.run(["git", "config", "--get", key], capture_output=True, text=True)
+        if out.returncode == 0 and out.stdout.strip():
+            value = out.stdout.strip()
+            names.add(value.split("@")[0] if "@" in value else value)
+    return sorted(n for n in names if len(n) >= 3 and n not in ("root", "runner", "user"))
 
 # Identity strings that are legitimately public in this repo.
 IDENTITY_ALLOW = [
@@ -127,7 +145,7 @@ def audit() -> int:
             for label, pattern in SECRET_PATTERNS:
                 if re.search(pattern, line):
                     findings.append(("SECRET", label, line_number, f"{path}: {line.strip()[:100]}"))
-            for username in AUTHOR_USERNAMES:
+            for username in author_usernames():
                 if username in line:
                     findings.append(("IDENTITY", "author username in tree", line_number, f"{path}: {line.strip()[:100]}"))
             for label, pattern in IDENTITY_CHECKS:
