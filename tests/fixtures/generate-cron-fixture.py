@@ -33,7 +33,9 @@ import argparse
 import contextlib
 import io
 import json
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -168,7 +170,6 @@ def render(hermes_src: Path, show_all: bool) -> str:
     at it, and call `cron_list` itself. Then the fixture IS the CLI's output.
     """
     import os
-    import tempfile
 
     sys.path.insert(0, str(hermes_src))
     import hermes_cli.cron as cron_cli  # noqa: PLC0415
@@ -200,6 +201,11 @@ def render(hermes_src: Path, show_all: bool) -> str:
         cron_jobs.CRON_DIR = original.cron_dir
         cron_jobs.JOBS_FILE = original.jobs_file
         cron_jobs.OUTPUT_DIR = original.output_dir
+        # Remove the throwaway store. The globals were restored but the directory
+        # was not, so every invocation (including every --check in the gate) left
+        # a /tmp/cron-fixture-* directory behind holding a real jobs.json — 44 had
+        # accumulated.
+        shutil.rmtree(tmp, ignore_errors=True)
     return buf.getvalue()
 
 

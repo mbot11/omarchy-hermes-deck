@@ -311,9 +311,15 @@ def _decode_refusal(path: Path) -> str:
         with Image.open(path) as probe:
             # Same pixel bound as _looks_like_an_image: this function exists to
             # decide whether the file is decodable, and `load()` answers that by
-            # allocating the whole raster (~650 MB for a 165-megapixel file).
-            # `verify()` exercises the structure without the pixels, which is the
-            # question being asked here; the declared size is checked separately.
+            # allocating the whole raster (~650 MB for a 165-megapixel file). The
+            # declared size is checked first, so load() only runs on files within
+            # the pixel budget.
+            #
+            # NOT verify(): `verify()` checks chunk CRCs and passes on a PNG whose
+            # IDAT holds non-deflate data — i.e. a file whose pixels cannot be
+            # decoded at all. That is the exact fail-open this function exists to
+            # close, so it must use the real decoder. Verified: a valid-CRC IDAT
+            # of garbage gives verify() OK and load() OSError.
             width, height = probe.size
             if width * height > MAX_IMAGE_PIXELS:
                 return (
@@ -321,7 +327,7 @@ def _decode_refusal(path: Path) -> str:
                     f" ({width}x{height} = {width * height} pixels exceeds the"
                     f" {MAX_IMAGE_PIXELS}-pixel limit)"
                 )
-            probe.verify()
+            probe.load()
         return ""
     except Image.DecompressionBombError as exc:  # type: ignore[attr-defined]
         return f"image is too large to decode safely ({exc})"
