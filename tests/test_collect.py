@@ -31,8 +31,11 @@ CREATE TABLE sessions (
 );
 CREATE TABLE messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT,
-    timestamp REAL NOT NULL
+    timestamp REAL NOT NULL, content TEXT
 );
+-- Mirror the live store: messages_fts is an external-content-free fts5 table
+-- kept in rowid lockstep with `messages` by triggers. Search joins on rowid.
+CREATE VIRTUAL TABLE messages_fts USING fts5(content);
 CREATE TABLE session_model_usage (
     session_id TEXT, model TEXT, billing_provider TEXT DEFAULT '',
     input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0,
@@ -56,15 +59,17 @@ def make_db(path: Path, now: float) -> None:
         (now - 86400, now - 86000),
     )
     conn.execute(
-        "INSERT INTO messages (session_id, role, timestamp) VALUES"
-        " ('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'user', ?)",
-        (now - 40,),
+        "INSERT INTO messages (session_id, role, timestamp, content) VALUES"
+        " ('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'user', ?, ?)",
+        (now - 40, "the parser drops the trailing comma token"),
     )
     conn.execute(
-        "INSERT INTO messages (session_id, role, timestamp) VALUES"
-        " ('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'assistant', ?)",
-        (now - 10,),
+        "INSERT INTO messages (session_id, role, timestamp, content) VALUES"
+        " ('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'assistant', ?, ?)",
+        (now - 10, "patched lexer.py to keep the comma"),
     )
+    # Keep the fts index in step with `messages`, exactly as the live triggers do.
+    conn.execute("INSERT INTO messages_fts(rowid, content) SELECT id, content FROM messages")
     conn.execute(
         "INSERT INTO session_model_usage VALUES"
         " ('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'glm-5.3-flash', '', 900000, 200000, 82000, 1000, 0.25)"
@@ -258,6 +263,132 @@ class CollectorTests(unittest.TestCase):
         gw = snap.get("gateway", {})
         self.assertEqual(gw.get("activeAgentsCount"), 0)
         self.assertEqual(gw.get("connectedPlatforms"), [])
+
+    def test_pinned_and_hidden_read_from_their_columns(self) -> None:
+        """The session query must read `pinned` and filter on `hidden`.
+
+        Both columns exist in the live store (schema v30). A query that
+        substitutes a literal `0 AS pinned` reports every pinned session as
+        unpinned, and one that drops `hidden = 0` lists sessions the user
+        deliberately hid. Neither failure throws, so only an assertion
+        catches it.
+        """
+        self.write_config("model: glm-5.3-flash\n")
+        conn = sqlite3.connect(self.home / "state.db")
+        conn.execute(
+            "INSERT INTO sessions VALUES ('bbbbbbbb-cccc-dddd-eeee-ffffffffffff',"
+            " 'cli', 'Pinned session', NULL, 'glm-5.3-flash', 1, ?, ?, ?, 1, 0.0, 0, 0)",
+            (self.now - 60, self.now - 30, "/home/u/Work/demo"),
+        )
+        conn.execute(
+            "INSERT INTO sessions VALUES ('cccccccc-dddd-eeee-ffff-000000000000',"
+            " 'cli', 'Hidden session', NULL, 'glm-5.3-flash', 1, ?, ?, ?, 0, 0.0, 1, 0)",
+            (self.now - 60, self.now - 20, "/home/u/Work/demo"),
+        )
+        conn.commit()
+        conn.close()
+
+        snap = run_collect(self.home, self.state)
+        by_title = {session["title"]: session for session in snap["sessions"]}
+
+        self.assertIn("Pinned session", by_title, "a pinned session must still be listed")
+        self.assertTrue(by_title["Pinned session"]["pinned"],
+                        "pinned must come from the column, not a literal")
+        self.assertNotIn("Hidden session", by_title,
+                         "a session with hidden = 1 must not be listed")
+
+
+    def test_search_returns_matching_session_with_snippet(self) -> None:
+        """--include-search runs an FTS5 query and returns sessions, not messages.
+
+        The panel wants the conversation to reopen, not the individual rows, so
+        results are deduplicated per session with a preview snippet.
+        """
+        self.write_config("model: glm-5.3-flash\n")
+        snap = run_collect(self.home, self.state, "--include-search", "comma")
+        results = snap["search"]["results"]
+        self.assertEqual(len(results), 1)
+        hit = results[0]
+        self.assertEqual(hit["id"], "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        self.assertEqual(hit["title"], "Fix the parser bug")
+        self.assertIn("comma", hit["preview"].lower())
+
+    def test_search_absent_without_the_flag(self) -> None:
+        """The fast path must not carry a search section at all.
+
+        Search is opt-in so the 5s fast snapshot stays the cheap local read it
+        was designed to be.
+        """
+        self.write_config("model: glm-5.3-flash\n")
+        snap = run_collect(self.home, self.state)
+        self.assertEqual(snap["search"]["query"], "")
+        self.assertEqual(snap["search"]["results"], [])
+
+    def test_search_empty_query_returns_nothing(self) -> None:
+        self.write_config("model: glm-5.3-flash\n")
+        snap = run_collect(self.home, self.state, "--include-search", "   ")
+        self.assertEqual(snap["search"]["results"], [])
+
+    def test_search_syntax_error_fails_soft(self) -> None:
+        """A malformed FTS5 query must degrade, not abort the snapshot.
+
+        `foo"bar` is an unterminated string to FTS5. A user typing a stray
+        quote into the search box must not blank the whole panel.
+        """
+        self.write_config("model: glm-5.3-flash\n")
+        snap = run_collect(self.home, self.state, "--include-search", 'foo"bar')
+        self.assertEqual(snap["search"]["results"], [])
+        self.assertEqual(snap["search"]["query"], 'foo"bar')
+
+    def test_search_query_is_data_not_syntax(self) -> None:
+        """FTS5 operators typed by a user must not change the query's shape.
+
+        Tokens are quoted before they reach MATCH, so `AND`, `NOT` and `*`
+        are searched for as words instead of being interpreted.
+        """
+        self.write_config("model: glm-5.3-flash\n")
+        snap = run_collect(self.home, self.state, "--include-search", "comma OR patched")
+        self.assertEqual(snap["search"]["results"], [])
+
+    def test_search_snippet_uses_column_zero(self) -> None:
+        """messages_fts has exactly one column, so snippet() indexes 0.
+
+        Passing any other index is a hard sqlite3 error ("column index out of
+        range") that would silently empty every result.
+        """
+        self.write_config("model: glm-5.3-flash\n")
+        snap = run_collect(self.home, self.state, "--include-search", "patched")
+        hit = snap["search"]["results"][0]
+        self.assertTrue(hit["preview"], "a snippet must be produced, not an empty string")
+
+    def test_search_matches_across_sessions(self) -> None:
+        self.write_config("model: glm-5.3-flash\n")
+        conn = sqlite3.connect(self.home / "state.db")
+        cursor = conn.execute(
+            "INSERT INTO messages (session_id, role, timestamp, content) VALUES"
+            " ('11111111-2222-3333-4444-555555555555', 'user', ?, ?)",
+            (self.now - 100, "comma handling in the gateway too"),
+        )
+        # Index only the row just added; re-indexing the whole table would
+        # collide with the rowids make_db already inserted.
+        conn.execute(
+            "INSERT INTO messages_fts(rowid, content) VALUES (?, ?)",
+            (cursor.lastrowid, "comma handling in the gateway too"),
+        )
+        conn.commit()
+        conn.close()
+
+        snap = run_collect(self.home, self.state, "--include-search", "comma")
+        ids = {hit["id"] for hit in snap["search"]["results"]}
+        self.assertEqual(ids, {
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "11111111-2222-3333-4444-555555555555",
+        })
+
+    def test_search_caps_results(self) -> None:
+        self.write_config("model: glm-5.3-flash\n")
+        snap = run_collect(self.home, self.state, "--include-search", "comma")
+        self.assertLessEqual(len(snap["search"]["results"]), 20)
 
 
 if __name__ == "__main__":

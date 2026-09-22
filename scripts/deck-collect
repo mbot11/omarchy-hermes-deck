@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import select
 import shutil
 import sqlite3
@@ -50,9 +51,12 @@ CACHE_PATH = STATE_DIR / "cache.json"
 GATEWAY_UNIT = "hermes-gateway.service"
 
 SESSIONS_LIMIT = 12
+SEARCH_LIMIT = 20
 MAX_SESSION_TITLE = 200
 MAX_MODEL_LEN = 200
 MAX_REASON_LEN = 300
+MAX_QUERY_LEN = 200
+MAX_PREVIEW_LEN = 300
 MAX_ERRORS = 8
 MAX_OUTPUT_BYTES = 65536
 DB_CELL_CAP = 4096
@@ -256,6 +260,68 @@ def collect_db(conn) -> dict:
     except (sqlite3.Error, ValueError, TypeError) as exc:
         note(f"state.db query failed: {exc.__class__.__name__}")
     return out
+
+
+def fts_match_expression(query: str) -> str:
+    """Turn a user's search text into an FTS5 MATCH expression.
+
+    Every token is quoted and internal quotes are doubled, so the only thing
+    FTS5 ever parses is a list of literal terms. Without this, a query of
+    `foo"bar` is an unterminated string (a hard sqlite3 error that would empty
+    the panel), and `OR`, `NOT`, `NEAR` and `*` become operators the user did
+    not know they were typing.
+    """
+    tokens = re.findall(r"\S+", query or "")
+    return " ".join('"' + token.replace('"', '""') + '"' for token in tokens)
+
+
+def collect_search(conn, query: str, limit: int = SEARCH_LIMIT) -> dict:
+    """Full-text search across every session's messages.
+
+    Returns one entry per matching session rather than per matching message:
+    the panel reopens conversations, so duplicate rows for one session would be
+    noise. `snippet()` takes the column index of messages_fts, which has
+    exactly one column, so the index is 0 — any other value is a hard
+    "column index out of range" error.
+    """
+    result: dict = {"query": clip(query, MAX_QUERY_LEN), "results": [], "totalHits": 0}
+    expression = fts_match_expression(query)
+    if not expression:
+        return result
+    try:
+        rows = conn.execute(
+            "SELECT s.id, s.title, s.display_name, s.source, s.model, "
+            "snippet(messages_fts, 0, '', '', ' … ', 12) AS preview "
+            "FROM messages_fts "
+            "JOIN messages m ON m.rowid = messages_fts.rowid "
+            "JOIN sessions s ON s.id = m.session_id "
+            "WHERE messages_fts MATCH ? AND s.hidden = 0 AND s.archived = 0 "
+            "ORDER BY messages_fts.rank "
+            "LIMIT ?",
+            (expression, limit * 4),
+        ).fetchall()
+    except sqlite3.Error as exc:
+        # A malformed expression, or an fts table an older store does not have.
+        note(f"search unavailable: {exc.__class__.__name__}")
+        return result
+    seen: set = set()
+    for sid, title, display, source, model, preview in rows:
+        key = clip(sid, 128)
+        if key in seen:
+            continue
+        seen.add(key)
+        result["results"].append({
+            "id": key,
+            "title": clip(title or display, MAX_SESSION_TITLE),
+            "source": clip(source, 32),
+            "model": clip(model, MAX_MODEL_LEN),
+            "preview": clip(" ".join(str(preview or "").split()), MAX_PREVIEW_LEN),
+        })
+        if len(result["results"]) >= limit:
+            break
+    result["totalHits"] = len(seen)
+    return result
+
 
 def check_default_agent() -> bool:
     """Check if Hermes is configured as Omarchy's default coding agent."""
@@ -519,7 +585,7 @@ def slow_kanban(cache: dict, include: bool) -> dict:
 
 # ── Main ────────────────────────────────────────────────────────────────
 
-def collect(include_slow: bool, include_kanban: bool) -> dict:
+def collect(include_slow: bool, include_kanban: bool, search_query: str = "") -> dict:
     hermes_bin = resolve_hermes()
     cache = load_cache()
     snapshot: dict = {
@@ -534,6 +600,7 @@ def collect(include_slow: bool, include_kanban: bool) -> dict:
         "modelSource": "unknown",
         "auth": [],
         "kanban": {"available": False, "boards": []},
+        "search": {"query": "", "results": [], "totalHits": 0},
         "activity": {"working": False, "lastMessageAt": None, "secondsSinceLastMessage": None},
         "usage": {},
         "sessions": [],
@@ -561,6 +628,8 @@ def collect(include_slow: bool, include_kanban: bool) -> dict:
         if conn is not None:
             try:
                 snapshot.update(collect_db(conn))
+                if search_query:
+                    snapshot["search"] = collect_search(conn, search_query)
             finally:
                 conn.close()
     else:
@@ -574,7 +643,14 @@ def main() -> int:
     args = sys.argv[1:]
     include_slow = "--include-slow" in args
     include_kanban = "--include-kanban" in args
-    payload = json.dumps(collect(include_slow, include_kanban), separators=(",", ":"))
+    # --include-search takes the query as the following argument; a flag with
+    # nothing after it is a no-op rather than an index error.
+    search_query = ""
+    if "--include-search" in args:
+        index = args.index("--include-search")
+        if index + 1 < len(args):
+            search_query = args[index + 1]
+    payload = json.dumps(collect(include_slow, include_kanban, search_query), separators=(",", ":"))
     sys.stdout.write(payload + "\n")
     return 0
 

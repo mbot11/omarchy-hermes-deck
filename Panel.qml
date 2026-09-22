@@ -17,6 +17,9 @@ Panel {
 
   property string lastActionError: ""
   property string confirmAction: "" // armed destructive action, cleared by timer
+  property string renamingId: ""    // session id whose title is being edited
+  property string searchQuery: ""   // submitted search; drives the collector
+  property string searchDraft: ""   // text currently in the search field
   readonly property bool showKanban: setting("showKanban", true) === true
   readonly property bool kanbanVisible: showKanban && service !== null && service.kanban.available === true
 
@@ -29,6 +32,34 @@ Panel {
   function display(value, fallback) {
     var text = String(value === undefined || value === null ? "" : value)
     return text === "" ? fallback : text
+  }
+
+  function beginRename(session) {
+    if (!session)
+      return
+    root.renamingId = String(session.id || "")
+    renameField.text = String(session.title || "")
+    renameField.forceActiveFocus()
+    renameField.selectAll()
+  }
+
+  function endRename() {
+    root.renamingId = ""
+    renameField.text = ""
+  }
+
+  function submitSearch() {
+    var query = root.searchDraft.trim()
+    root.searchQuery = query
+    if (root.service)
+      root.service.searchQuery = query
+  }
+
+  function clearSearch() {
+    root.searchDraft = ""
+    root.searchQuery = ""
+    if (root.service)
+      root.service.searchQuery = ""
   }
 
   function open() {
@@ -486,14 +517,165 @@ Panel {
             width: parent.width
             session: modelData
             bar: root.bar
+            isLatest: modelData.id === DeckState.newestSessionId(root.sessions)
             onClicked: {
               if (root.service)
                 root.service.act("resume-session", session.id)
               root.close()
             }
+            onPinRequested: {
+              if (root.service)
+                root.service.act(session.pinned ? "unpin-session" : "pin-session", session.id)
+            }
+            onRenameRequested: root.beginRename(session)
+          }
+        }
+
+        // Rename is inline: the field appears under the list, Enter commits
+        // and Escape cancels. A title is free text, so it travels as a single
+        // argv entry and deck-act gates only its length and emptiness.
+        Row {
+          visible: root.renamingId !== ""
+          width: parent.width
+          spacing: Style.space(6)
+
+          Text {
+            text: "rename:"
+            textFormat: Text.PlainText
+            anchors.verticalCenter: parent.verticalCenter
+            color: Qt.darker(root.bar.foreground, 1.4)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
+          TextInput {
+            id: renameField
+            width: parent.width - parent.children[0].implicitWidth - Style.space(6)
+            height: Style.space(26)
+            color: root.bar.foreground
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            verticalAlignment: Text.AlignVCenter
+            selectByMouse: true
+            clip: true
+
+            Rectangle {
+              anchors.fill: parent
+              radius: Style.space(3)
+              color: "transparent"
+              border.width: 1
+              border.color: Qt.rgba(root.bar.foreground.r, root.bar.foreground.g, root.bar.foreground.b, 0.25)
+              z: -1
+            }
+
+            onAccepted: {
+              if (root.service && text.trim() !== "")
+                root.service.act("rename-session", [root.renamingId, text.trim()])
+              root.endRename()
+            }
+            Keys.onEscapePressed: root.endRename()
           }
         }
       }
+      // ── Search ─────────────────────────────────────────────────────────
+      Column {
+        width: parent.width
+        spacing: Style.space(6)
+
+        PanelSectionHeader {
+          text: "SEARCH"
+          foreground: root.bar.foreground
+          fontFamily: root.bar.fontFamily
+        }
+
+        Row {
+          width: parent.width
+          spacing: Style.space(6)
+
+          TextInput {
+            id: searchField
+            width: parent.width - searchButton.implicitWidth - clearButton.implicitWidth - Style.space(12)
+            height: Style.space(26)
+            color: root.bar.foreground
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            verticalAlignment: Text.AlignVCenter
+            selectByMouse: true
+            clip: true
+            text: root.searchDraft
+            onTextChanged: root.searchDraft = text
+
+            Rectangle {
+              anchors.fill: parent
+              radius: Style.space(3)
+              color: "transparent"
+              border.width: 1
+              border.color: Qt.rgba(root.bar.foreground.r, root.bar.foreground.g, root.bar.foreground.b, 0.25)
+              z: -1
+            }
+
+            onAccepted: root.submitSearch()
+            Keys.onEscapePressed: root.clearSearch()
+          }
+
+          Button {
+            id: searchButton
+            text: "Find"
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            bordered: true
+            enabled: root.service !== null && root.searchDraft.trim() !== ""
+            onClicked: root.submitSearch()
+          }
+
+          Button {
+            id: clearButton
+            text: "Clear"
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            bordered: true
+            visible: root.searchQuery !== ""
+            onClicked: root.clearSearch()
+          }
+        }
+
+        Text {
+          visible: root.searchQuery !== ""
+          width: parent.width
+          text: root.service && root.service.searchResults
+            ? (root.service.searchResults.results.length + " conversation(s) matching \"" + root.searchQuery + "\"")
+            : ""
+          textFormat: Text.PlainText
+          color: Qt.darker(root.bar.foreground, 1.4)
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
+        }
+
+        Repeater {
+          model: root.service && root.service.searchResults && Array.isArray(root.service.searchResults.results)
+            ? root.service.searchResults.results.slice(0, 8)
+            : []
+
+          SessionRow {
+            required property var modelData
+            width: parent.width
+            session: modelData
+            bar: root.bar
+            onClicked: {
+              if (root.service)
+                root.service.act("resume-session", session.id)
+              root.close()
+            }
+            onPinRequested: {
+              if (root.service)
+                root.service.act(session.pinned ? "unpin-session" : "pin-session", session.id)
+            }
+            onRenameRequested: root.beginRename(session)
+          }
+        }
+      }
+
       // ── Kanban ─────────────────────────────────────────────────────────
       Column {
         visible: root.kanbanVisible
@@ -669,10 +851,21 @@ Panel {
     id: sessionRow
     property var session: null
     property var bar: null
+    property bool isLatest: false
     signal activate()
+    signal pinRequested()
+    signal renameRequested()
     implicitHeight: sessionLayout.implicitHeight + Style.space(8)
     hoverEnabled: true
     onClicked: sessionRow.activate()
+
+    // Right-click pins or unpins. Pinning is the flag Hermes Desktop's sidebar
+    // reads, so this is the one action here that changes another surface.
+    acceptedButtons: Qt.LeftButton | Qt.RightButton
+    onPressed: function(buttonCode) {
+      if (buttonCode === Qt.RightButton)
+        sessionRow.pinRequested()
+    }
 
     Rectangle {
       anchors.fill: parent
@@ -693,6 +886,29 @@ Panel {
         textFormat: Text.PlainText
         color: root.bar.foreground
         font.pixelSize: Style.font.body
+      }
+
+      // LATEST marks the newest conversation, which is a different fact from
+      // the live dot: the dot is "working now", this is "most recent".
+      Rectangle {
+        visible: sessionRow.isLatest
+        radius: Style.space(3)
+        color: Qt.rgba(root.bar.foreground.r, root.bar.foreground.g, root.bar.foreground.b, 0.10)
+        border.width: 1
+        border.color: Qt.rgba(root.bar.foreground.r, root.bar.foreground.g, root.bar.foreground.b, 0.30)
+        implicitWidth: latestText.implicitWidth + Style.space(8)
+        implicitHeight: latestText.implicitHeight + Style.space(2)
+
+        Text {
+          id: latestText
+          anchors.centerIn: parent
+          text: "LATEST"
+          textFormat: Text.PlainText
+          color: root.bar.foreground
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
       }
 
       Column {
@@ -725,6 +941,10 @@ Panel {
               bits.push(DeckState.shortenModel(sessionRow.session.model))
             return bits.join(" · ")
           }
+          // Session titles, workspace paths and model ids are written by Hermes
+          // and by whatever ran in the session, so they are not ours to trust;
+          // AutoText would read markup in them.
+          textFormat: Text.PlainText
           color: Qt.darker(root.bar.foreground, 1.4)
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.caption

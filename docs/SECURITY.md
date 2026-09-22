@@ -27,8 +27,12 @@ session, which is Hermes by definition, not a plugin action path). The
 dispatcher executes a fixed allowlist of documented commands with fixed
 arguments; dynamic values are validated before use:
 
-- session ids must match `^[0-9a-zA-Z_-]{8,64}$` (Hermes ids are
-  `YYYYMMDD_HHMMSS_xxxxxx`; UUID-style ids still pass);
+- session ids must match `^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$`, enforced in one
+  `require_session_id` helper that every session action shares (Hermes ids are
+  `YYYYMMDD_HHMMSS_xxxxxx`; UUID-style ids still pass). The leading character
+  may not be a dash, so no value can reach the Hermes CLI looking like an
+  option flag, and a new session action cannot ship with a weaker check than
+  its neighbours;
 - model ids must match `^[A-Za-z0-9._:/][A-Za-z0-9._:/-]{0,127}\$`, so the
   first character may not be a dash, so no value can reach the Hermes CLI
   looking like an option flag;
@@ -42,6 +46,20 @@ arguments; dynamic values are validated before use:
   the same convention Omarchy's packaged agent launchers use; in-TUI
   approvals are auto-accepted by design, and the action is an explicit
   user click;
+- `pin-session` / `unpin-session` call `hermes sessions pin|unpin <id>`. The
+  pin flag is the same one Hermes Desktop's sidebar reads, so this action
+  writes state another surface displays; it is the only action here whose
+  effect is visible outside this plugin. Both take a validated session id and
+  nothing else;
+- `rename-session` calls `hermes sessions rename <id> <title>`. The title is
+  free text the user typed, passed as one argv entry; only its length
+  (1-200 characters) and absence of newlines are gated, so shell
+  metacharacters in a title remain data rather than syntax;
+- `search-sessions` is a read, not a mutation: the collector runs the FTS5
+  query itself against `messages_fts` with every token quoted before it
+  reaches `MATCH`, so a query the user types cannot become FTS5 syntax
+  (`OR`, `NOT`, `NEAR`, `*`) and an unterminated quote degrades the section
+  instead of erroring. Search is opt-in and never runs on the fast path;
 - destructive actions (`pause`, `gateway-restart`) require a second click
   within 3 seconds in the panel.
 
