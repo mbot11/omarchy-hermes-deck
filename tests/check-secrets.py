@@ -170,6 +170,14 @@ def audit() -> int:
     files = tracked_files()
     findings: list[tuple[str, str, int, str]] = []
 
+    # This file is excluded from its own scan. It necessarily contains every
+    # shape it looks for — the patterns, and the self-test's planted samples —
+    # so including it can only ever report the scanner. Its correctness is
+    # covered by --self-test instead, which is the honest way to check a
+    # detector: prove it fires, rather than scan the thing that defines it.
+    self_path = os.path.relpath(os.path.abspath(__file__), os.getcwd())
+    files = [f for f in files if f != self_path]
+
     for path in files:
         data = read_blob(path)
         if data is None:
