@@ -170,16 +170,27 @@ class TestReadBounds(unittest.TestCase):
                     cis.image_metadata(path)
 
     def test_oversized_image_is_reported_not_crashed(self):
-        """The refusal must reach the caller as a reported finding."""
-        import tempfile
+        """The refusal must reach the caller as a REPORTED finding.
+
+        This asserted exit 2, which is what the code did by returning early from
+        the ValueError handler — and that early return discarded the findings of
+        every image already audited, so a caller publishing on "no FINDING lines"
+        would publish a leaking image. The refusal is a finding now, and the exit
+        stays fail-closed.
+        """
+        import tempfile, io, contextlib
         from unittest import mock
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "huge.png"
             path.write_bytes(b"\x89PNG\r\n\x1a\n")
-            with mock.patch.object(cis, "MAX_IMAGE_BYTES", 1):
+            out = io.StringIO()
+            with mock.patch.object(cis, "MAX_IMAGE_BYTES", 1), \
+                    contextlib.redirect_stdout(out):
                 code = cis.main(["check-image-safety.py", str(path)])
-            self.assertEqual(code, 2, "an oversized image should exit 2, not crash")
+            self.assertEqual(code, 1, "an oversized image must fail the gate")
+            self.assertIn("unreadable", out.getvalue(),
+                          "the refusal must be reported, not just exit-coded")
 
 
 class TestTildePaths(unittest.TestCase):
@@ -737,6 +748,108 @@ class TestSecretScanDecodesRealEncodings(unittest.TestCase):
 
     def test_plain_utf8_control(self):
         self.assertIn("SECRET", self._scan(self._key()))
+
+
+class TestGateRobustness(unittest.TestCase):
+    """Regressions for defects the adversarial review demonstrated."""
+
+    def _bomb(self, tmp: Path) -> Path:
+        """A tiny PNG declaring an enormous raster, built OUT of process.
+
+        Building it here needs a 495 MB raw buffer, which would dominate whichever
+        process measures RSS — the test would then measure its own fixture rather
+        than the code under test. Generate it in a short-lived child.
+        """
+        import subprocess, sys, textwrap
+        pth = tmp / "bomb.png"
+        gen = (
+            "import zlib, struct\n"
+            "def ch(t, d):\n"
+            "    return struct.pack('>I', len(d)) + t + d + "
+            "struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)\n"
+            "w, h = 16500, 10000\n"
+            "raw = (b'\\x00' + bytes(w * 3)) * h\n"
+            "out = (b'\\x89PNG\\r\\n\\x1a\\n'\n"
+            "       + ch(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0))\n"
+            "       + ch(b'IDAT', zlib.compress(raw, 9)) + ch(b'IEND', b''))\n"
+            f"open({str(pth)!r}, 'wb').write(out)\n"
+        )
+        subprocess.run([sys.executable, "-c", gen], check=True)
+        return pth
+
+    def _png_with_text(self, pth: Path, key: bytes, value: bytes) -> Path:
+        """A real, decodable PNG carrying a tEXt chunk."""
+        import zlib, struct
+        def ch(t, d):
+            return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+        w = h = 8
+        raw = b"".join(b"\x00" + bytes([i % 256 for i in range(w * 3)]) for i in range(h))
+        blob = (b"\x89PNG\r\n\x1a\n"
+                + ch(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+                + ch(b"tEXt", key + b"\x00" + value)
+                + ch(b"IDAT", zlib.compress(raw, 6)) + ch(b"IEND", b""))
+        pth.write_bytes(blob)
+        return pth
+
+    def test_pixel_bomb_does_not_allocate_the_raster(self):
+        """`_looks_like_an_image` must not decode a 165-megapixel file.
+
+        `load()` allocates the full raster: the gate peaked at ~650 MB answering
+        "is this decodable?" for a 481 KB file. The declared size is checked
+        before any pixel work.
+        """
+        import tempfile, subprocess, sys, textwrap
+        with tempfile.TemporaryDirectory() as tmp:
+            bomb = self._bomb(Path(tmp))
+            # Measure in a FRESH process. Building the 495 MB raw buffer here
+            # would inflate this process's RSS and measure the wrong thing.
+            code = textwrap.dedent(f"""
+                import importlib.util, resource, sys
+                from pathlib import Path
+                spec = importlib.util.spec_from_file_location("cis", {str(SCANNER)!r})
+                cis = importlib.util.module_from_spec(spec); spec.loader.exec_module(cis)
+                r = cis._looks_like_an_image(Path({str(bomb)!r}))
+                sys.stderr.write(f"{{r}} {{resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024}}")
+            """)
+            out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+            verdict, mb = out.stderr.strip().splitlines()[-1].split()
+            self.assertEqual(verdict, "False", "a 165 Mpx file is not a usable image")
+            self.assertLess(int(mb), 200, f"pixel check allocated {mb} MB")
+
+    def test_oversize_file_does_not_discard_earlier_findings(self):
+        """A finding collected before an oversized path must still be printed."""
+        import tempfile, subprocess, sys
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            leak = self._png_with_text(
+                d / "leak.png", b"note", b'aws = "' + b"AKIA" + b'IOSFODNN7EXAMPLE"')
+            big = d / "big.bin"
+            big.write_bytes(b"x" * (65 * 1024 * 1024 + 1024))
+            for order in ([leak, big], [big, leak]):
+                with self.subTest(order=[p.name for p in order]):
+                    out = subprocess.run([sys.executable, str(SCANNER)] + [str(p) for p in order],
+                                         capture_output=True, text=True)
+                    self.assertEqual(out.returncode, 1)
+                    self.assertIn("aws access key", out.stdout,
+                                  "a finding before an oversized file was discarded")
+
+    def test_non_utf8_filename_still_yields_a_verdict(self):
+        """A surrogate-escaped path must not crash the reporting path.
+
+        Printing it raised UnicodeEncodeError, so the gate emitted NO verdict —
+        it crashed while reporting, which reads as "nothing to report".
+        """
+        import tempfile, subprocess, os, sys
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = os.fsencode(tmp) + b"/\xff\xfe\x80\x81.png"
+            with open(raw, "wb") as fh:
+                fh.write(b"\x89PNG\r\n\x1a\n" + b"truncated")
+            out = subprocess.run([sys.executable, str(SCANNER), os.fsdecode(raw)],
+                                 capture_output=True)
+            self.assertNotIn(b"Traceback", out.stderr)
+            self.assertNotEqual(out.returncode, 2, "must not be a crash")
+            self.assertTrue(b"FINDING" in out.stdout or b"CLEAN" in out.stdout,
+                            "no verdict was emitted")
 
 
 if __name__ == "__main__":

@@ -309,7 +309,19 @@ def _decode_refusal(path: Path) -> str:
         return "Pillow is not importable"
     try:
         with Image.open(path) as probe:
-            probe.load()
+            # Same pixel bound as _looks_like_an_image: this function exists to
+            # decide whether the file is decodable, and `load()` answers that by
+            # allocating the whole raster (~650 MB for a 165-megapixel file).
+            # `verify()` exercises the structure without the pixels, which is the
+            # question being asked here; the declared size is checked separately.
+            width, height = probe.size
+            if width * height > MAX_IMAGE_PIXELS:
+                return (
+                    f"image is too large to decode safely"
+                    f" ({width}x{height} = {width * height} pixels exceeds the"
+                    f" {MAX_IMAGE_PIXELS}-pixel limit)"
+                )
+            probe.verify()
         return ""
     except Image.DecompressionBombError as exc:  # type: ignore[attr-defined]
         return f"image is too large to decode safely ({exc})"
@@ -334,6 +346,15 @@ def _looks_like_an_image(path: Path) -> bool:
         return False
     try:
         with Image.open(path) as probe:
+            # Bound the decode BEFORE touching pixels. `load()` allocates the full
+            # raster, so asking "is this decodable?" on a 165-megapixel file cost
+            # ~700 MB of RSS — the metadata this module exists to read needs none
+            # of it. Pillow only raises DecompressionBombWarning below twice its
+            # own limit, so a merely-huge image is accepted and then decoded at
+            # full size. Refuse by declared dimensions instead.
+            width, height = probe.size
+            if width * height > MAX_IMAGE_PIXELS:
+                return False
             probe.load()  # a header alone is not enough; truncated files fail here
         return True
     except Exception:  # noqa: BLE001
@@ -355,6 +376,18 @@ def image_metadata(path: Path) -> dict[str, str]:
         from PIL import Image
 
         with Image.open(path) as im:
+            # `im.info` and EXIF are available without touching pixels, but Pillow
+            # still allocates the raster for some formats when the image is
+            # opened-and-used this way — a 165-megapixel file cost ~650 MB here.
+            # Metadata needs the header, not the pixels: cap by declared size and
+            # report an unreadable-header finding rather than decoding a bomb.
+            width, height = im.size
+            if width * height > MAX_IMAGE_PIXELS:
+                out["info:oversize"] = (
+                    f"{width}x{height} = {width * height} pixels exceeds the"
+                    f" {MAX_IMAGE_PIXELS}-pixel limit; metadata not read"
+                )
+                return out
             for key, value in (im.info or {}).items():
                 if isinstance(value, (str, bytes)):
                     text = value.decode("utf-8", "replace") if isinstance(value, bytes) else value
@@ -542,6 +575,17 @@ def self_test() -> int:
     return 1 if failures else 0
 
 
+def _safe(text) -> str:
+    """Text that can always be written to a stream.
+
+    A filename of raw non-UTF8 bytes arrives surrogate-escaped (os.fsdecode), and
+    printing it raises UnicodeEncodeError — so the gate crashed while REPORTING an
+    unreadable file and emitted no verdict at all. Every path reaching a stream
+    goes through here.
+    """
+    return str(text).encode("utf-8", "backslashreplace").decode("utf-8", "replace")
+
+
 def main(argv: list[str]) -> int:
     args = argv[1:]
     if "--self-test" in args:
@@ -572,14 +616,17 @@ def main(argv: list[str]) -> int:
     for path in paths:
         try:
             all_findings.extend(audit_image(path, explain))
-        except ValueError as exc:
-            print(f"check-image-safety: {exc}", file=sys.stderr)
-            return 2
         except Exception as exc:  # noqa: BLE001
             # One unreadable path must not discard the findings already collected
-            # for every other image, which is what an uncaught exception did.
-            print(f"check-image-safety: could not audit {path}:"
-                  f" {type(exc).__name__}: {exc}", file=sys.stderr)
+            # for every other image, and must not skip the ones after it.
+            #
+            # ValueError used to `return 2` immediately, so a single oversized file
+            # ANYWHERE in the argument list threw away the findings of every image
+            # already audited — a caller publishing on "no FINDING lines" would
+            # publish a leaking image. The reverse order discarded silently too.
+            # Report it as a finding, keep the verdict fail-closed, and continue.
+            print(_safe(f"check-image-safety: could not audit {path}:"
+                        f" {type(exc).__name__}: {exc}"), file=sys.stderr)
             all_findings.append((
                 f"unreadable:{path.name}",
                 "could not be audited",
@@ -590,8 +637,11 @@ def main(argv: list[str]) -> int:
     if all_findings:
         print()
         for origin, label, detail in all_findings:
-            print(f"FINDING   {label}  [{origin}]")
-            print(f"          {detail}")
+            # Every emitted path goes through _safe: a surrogate-escaped filename
+            # in the finding detail raised UnicodeEncodeError HERE, on the verdict
+            # line itself, so the gate printed no result at all.
+            print(_safe(f"FINDING   {label}  [{origin}]"))
+            print(_safe(f"          {detail}"))
         print(f"\n{len(all_findings)} finding(s). DO NOT PUBLISH this image until each is"
               " resolved: crop or redact the region, or capture again with the content"
               " removed.", file=sys.stderr)
