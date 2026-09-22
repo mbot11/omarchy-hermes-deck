@@ -19,7 +19,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: deck-act pause|resume|gateway-restart|launch-desktop|set-default-agent|new-session [prompt]|resume-session <id>|set-model <model>|pin-session <id>|unpin-session <id>|rename-session <id> <title>" >&2
+  echo "usage: deck-act pause|resume|gateway-restart|launch-desktop|set-default-agent|new-session [prompt]|resume-session <id>|set-model <model>|pin-session <id>|unpin-session <id>|rename-session <id> <title>|archive-session <id>" >&2
   exit 64
 }
 
@@ -136,6 +136,14 @@ case "$action" in
       exit 65
     }
     exec "$(hermes_bin)" sessions rename "$session_id" "$new_title"
+    ;;
+  archive-session)
+    (( $# == 1 )) || usage
+    session_id=$1
+    require_session_id "$session_id"
+    # Archive is a soft-hide in Hermes, so it is recoverable and does not
+    # destroy the conversation. The id travels as its own argv entry.
+    exec "$(hermes_bin)" sessions archive "$session_id"
     ;;
   *)
     usage

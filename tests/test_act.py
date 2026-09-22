@@ -210,6 +210,18 @@ class ActTests(unittest.TestCase):
             with self.subTest(action=action):
                 self.assertNotEqual(self.run_act(action).returncode, 0)
 
+    def test_archive_session_requires_a_valid_session_id(self) -> None:
+        for bad in ("short", "-flag", "--all", "", "has spaces!"):
+            with self.subTest(bad=bad):
+                self.assertNotEqual(
+                    self.run_act("archive-session", bad).returncode, 0
+                )
+
+    def test_archive_session_is_in_the_usage_text(self) -> None:
+        result = self.run_act()
+        output = result.stderr.decode() + result.stdout.decode()
+        self.assertIn("archive-session", output)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

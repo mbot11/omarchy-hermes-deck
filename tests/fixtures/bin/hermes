@@ -42,6 +42,22 @@ EOF
     case "${2:-}" in
       pin | unpin) exit 0 ;;
       rename) [[ -n ${3:-} && -n ${4:-} ]] && exit 0; exit 64 ;;
+      archive) [[ -n ${3:-} ]] && exit 0; exit 64 ;;
+      *) exit 64 ;;
+    esac
+    ;;
+  cron)
+    # `hermes cron list` has no --json: the collector parses this text, so the
+    # stub reproduces the real columnar output including a paused marker.
+    case "${2:-}" in
+      list)
+        cat <<'EOF'
+NAME              SCHEDULE     NEXT RUN             STATUS
+nightly-backup    0 3 * * *    in 8h                active
+weekly-digest     0 9 * * 1    in 3d                paused
+EOF
+        ;;
+      pause | resume | run) exit 0 ;;
       *) exit 64 ;;
     esac
     ;;

@@ -391,5 +391,57 @@ class CollectorTests(unittest.TestCase):
         self.assertLessEqual(len(snap["search"]["results"]), 20)
 
 
+class InventoryTests(unittest.TestCase):
+    """`hermes cron` oversight: 0 of 15 competing plugins do this."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.home = base / "hermes"
+        self.home.mkdir()
+        self.state = base / "state"
+        self.now = time.time()
+        make_db(self.home / "state.db", self.now)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_inventory_reports_cron_jobs_with_paused_state(self) -> None:
+        snap = run_collect(self.home, self.state, "--include-inventory")
+        self.assertIn("cron", snap)
+        jobs = snap["cron"]
+        self.assertEqual(len(jobs), 2, f"expected 2 jobs, got {jobs!r}")
+        by_name = {job["name"]: job for job in jobs}
+        self.assertIn("nightly-backup", by_name)
+        self.assertIn("weekly-digest", by_name)
+        self.assertFalse(by_name["nightly-backup"]["paused"])
+        self.assertTrue(by_name["weekly-digest"]["paused"])
+
+    def test_header_row_is_not_reported_as_a_job(self) -> None:
+        snap = run_collect(self.home, self.state, "--include-inventory")
+        names = [job["name"] for job in snap["cron"]]
+        self.assertNotIn("NAME", names)
+        for junk in ("SCHEDULE", "STATUS", "NEXT"):
+            self.assertNotIn(junk, names)
+
+    def test_inventory_is_absent_from_the_fast_path(self) -> None:
+        """The fast path must not grow a subprocess.
+
+        INVARIANT 2: `deck-collect` without --include-slow spawns nothing. A
+        cron inventory needs the CLI, so it must never appear by default.
+        """
+        snap = run_collect(self.home, self.state)
+        self.assertNotIn("cron", snap, "inventory leaked into the fast path")
+
+    def test_inventory_survives_a_missing_cli(self) -> None:
+        """A broken `hermes` binary must degrade, not crash the panel."""
+        snap = run_collect(
+            self.home, self.state, "--include-inventory",
+            extra_env={"PATH": "/nonexistent"},
+        )
+        self.assertIn("cron", snap)
+        self.assertEqual(snap["cron"], [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
