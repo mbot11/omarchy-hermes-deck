@@ -38,7 +38,8 @@ python3 tests/test_collect.py        # from the repository checkout
 `{working, lastMessageAt, secondsSinceLastMessage}`, `usage`
 `{today, week, month, byModelToday}`, `sessions[]`, `auth[]`,
 `kanban` `{available, boards[]}`, `search` `{query, results[], totalHits}`,
-`errors[]`.
+`errors[]`, and `cron[]` `{name, schedule, paused, running}` — absent
+unless `--include-inventory` was passed.
 
 Rules that must not regress:
 
@@ -54,6 +55,13 @@ Rules that must not regress:
   token is quoted before `MATCH`, and `snippet()` indexes column 0 because
   `messages_fts` has exactly one column — any other index is a hard
   "column index out of range" error. A malformed query degrades the section.
+- `--include-inventory` is opt-in and spawns `hermes cron list`, so it must
+  never ride the fast path. That command has **no `--json`**, so the output is
+  parsed as text: only the documented schedule shapes are accepted and every
+  other row is dropped, which degrades to an empty list rather than to wrong
+  data. There is also no `toggle` subcommand — pausing is `pause`/`resume`.
+- `archive-session` is a soft-hide in Hermes, so it is recoverable. Like every
+  session action it validates the id and passes it as its own argv entry.
 
 ## Actions
 

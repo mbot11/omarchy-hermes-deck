@@ -22,6 +22,7 @@ omarchy plugin add https://github.com/mbot11/omarchy-hermes-deck.git --enable
 | Pin / rename | Right-click a session to pin it, or use the inline rename field. **Pinning writes the same flag Hermes Desktop's own sidebar reads**, so a pin set here appears there without a second store. |
 | Usage | Today and 7-day token totals with Hermes' own cost estimates, broken down by model. |
 | Kanban | Read-only board summaries from `hermes kanban boards list --json`. |
+| Cron | Scheduled jobs with their schedule and a paused marker, from `hermes cron list`. Inventory only — pausing and resuming stay in the CLI. |
 | TUI modal | Quake-style drop-down terminal running `hermes --tui` on a Hyprland special workspace; survives shell restarts. |
 
 Desktop notifications fire when the agent finishes long work, when the emergency stop engages or lifts, and when the gateway service changes state. Disable with the **notify** widget setting.
@@ -53,6 +54,7 @@ Open the bar settings for the widget:
 | Key | Default | Meaning |
 |---|---|---|
 | `showKanban` | true | Show the Kanban section |
+| `showCron` | true | Show the Cron section |
 | `notify` | true | Desktop notifications for agent events |
 
 ## Panel keys
@@ -93,7 +95,7 @@ delete:
 
 | Leftover | Path | Why it stays |
 |---|---|---|
-| Collector cache | `${XDG_STATE_HOME:-~/.local/state}/omarchy/hermes-deck/cache.json` | Holds only TTL-cached `hermes --version`, auth-provider names, and kanban board summaries. No secrets. Delete the directory if you want it gone. |
+| Collector cache | `${XDG_STATE_HOME:-~/.local/state}/omarchy/hermes-deck/cache.json` | Holds only TTL-cached `hermes --version`, auth-provider names, kanban board summaries, and cron job names/schedules. No secrets. Delete the directory if you want it gone. |
 | Hotkeys | `~/.config/hypr/bindings.lua` | The two `o.bind` lines from [Install](#install) are yours to keep or delete; the plugin never edits this file. Run `hyprctl reload` and check `hyprctl configerrors` after editing. |
 
 If you set Hermes as Omarchy's default coding agent through the panel, that

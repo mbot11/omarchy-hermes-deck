@@ -4,7 +4,7 @@
 
 Hermes Deck is a live companion surface for a user-local Hermes Agent on
 Omarchy: one persistent state daemon feeding a bar glyph and a panel with
-Status, Actions, Sessions, Search, Usage, and Kanban sections, plus a
+Status, Actions, Sessions, Search, Usage, Kanban, and Cron sections, plus a
 drop-down TUI modal. It complements Hermes; it never replaces it.
 
 ## Component map
@@ -22,7 +22,7 @@ Omarchy Quattro shell
     ├── state-colored glyph + pulse while working
     ├── shell.serviceFor(pluginId) discovery (retry timer)
     └── Panel.qml
-        ├── Status, Actions, Sessions, Search, Usage, Kanban sections
+        ├── Status, Actions, Sessions, Search, Usage, Kanban, Cron sections
         ├── session rows: click resumes, right-click pins/unpins
         ├── inline rename field (Enter commits, Escape cancels)
         ├── LATEST badge on the newest conversation
@@ -39,6 +39,8 @@ scripts/deck-collect (python3 stdlib only)
 │   ├── hermes auth list        (TTL 10 min)
 │   ├── hermes config get model.default   (TTL 10 min, only if YAML parse empty)
 │   └── hermes kanban boards list --json  (TTL 60 s, only with --include-kanban)
+├── opt-in, only with --include-inventory:
+│   └── hermes cron list              (TTL 5 min; inventory only, no control)
 └── opt-in, only with --include-search <query>:
     └── messages_fts MATCH (every token quoted) joined to messages + sessions,
         deduplicated per session, snippet() over column 0, capped at 20
