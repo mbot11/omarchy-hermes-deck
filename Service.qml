@@ -21,6 +21,9 @@ Item {
   property bool notificationsEnabled: true
   property bool panelOpen: false // set by the panel; drives cadence + kanban
   property bool kanbanEnabled: true
+  // Set by the panel's search box. Non-empty makes the slow refresh pass
+  // --include-search, so the FTS5 query runs only while a search is active.
+  property string searchQuery: ""
 
   readonly property string pluginId: "io.github.mbot11.hermes-deck"
   readonly property string modalIpcTarget: pluginId + ".modal"
@@ -44,6 +47,11 @@ Item {
   readonly property var kanban: state.kanban && typeof state.kanban === "object" ? state.kanban : {
     "available": false,
     "boards": []
+  }
+  readonly property var searchResults: state.search && typeof state.search === "object" ? state.search : {
+    "query": "",
+    "results": [],
+    "totalHits": 0
   }
 
   // Notification transition trackers.
@@ -75,7 +83,7 @@ Item {
   function refreshSlow() {
     if (collectProc.running)
       return
-    collectProc.command = adapter.collectArgs(root.pluginDir, true, root.kanbanEnabled && root.panelOpen)
+    collectProc.command = adapter.collectArgs(root.pluginDir, true, root.kanbanEnabled && root.panelOpen, root.searchQuery)
     collectProc.running = true
   }
 

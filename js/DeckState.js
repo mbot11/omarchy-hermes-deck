@@ -19,6 +19,7 @@ function emptyState() {
     sessions: [],
     auth: [],
     kanban: { available: false, boards: [] },
+    search: { query: "", results: [], totalHits: 0 },
     errors: []
   }
 }
@@ -102,6 +103,27 @@ function shortenModel(model) {
   var slash = text.lastIndexOf("/")
   if (slash !== -1) text = text.substring(slash + 1)
   return text.length > 28 ? text.substring(0, 27) + "…" : text
+}
+
+// Newest session id in the list, so the panel can badge it distinctly from
+// the "currently working" dot. Sessions arrive newest-first from the
+// collector, but the badge is derived from the activity timestamps rather
+// than from list order, so a reordering of the query cannot mislabel it.
+function newestSessionId(sessions) {
+  if (!Array.isArray(sessions) || sessions.length === 0) return ""
+  var newestId = ""
+  var newestTs = -1
+  for (var i = 0; i < sessions.length; i++) {
+    var s = sessions[i]
+    if (!s) continue
+    var ts = s.lastActivityAt !== null && s.lastActivityAt !== undefined ? s.lastActivityAt : s.startedAt
+    if (ts === null || ts === undefined) continue
+    if (Number(ts) > newestTs) {
+      newestTs = Number(ts)
+      newestId = String(s.id || "")
+    }
+  }
+  return newestId
 }
 
 function platformBadge(source) {

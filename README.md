@@ -17,7 +17,9 @@ omarchy plugin add https://github.com/mbot11/omarchy-hermes-deck.git --enable
 | Bar glyph | State-colored: cyan pulse while the agent works, amber while paused, red when the gateway is down. Right-click toggles the TUI modal. |
 | Status | Gateway state with connected messaging platforms (Telegram, Slack, etc.) and active background task count, active model, configured auth providers, and Omarchy default agent badge. |
 | Actions | Pause/resume the agent (`hermes pause`/`resume` emergency stop), restart the gateway (`hermes gateway restart`), start a new chat, open the native desktop app (`hermes-desktop`), or set as Omarchy default coding agent; destructive actions need a confirming second click. |
-| Sessions | Recent conversations with title, age, workspace, model, and origin badges (`[Desktop]`, `[Telegram]`, `[CLI]`); clicking one resumes it in the TUI. |
+| Sessions | Recent conversations with title, age, workspace, model, and origin badges (`[Desktop]`, `[Telegram]`, `[CLI]`); clicking one resumes it in the TUI. Right-click a row to pin or unpin it. A `LATEST` badge marks the newest conversation, which is a different fact from the live working dot. |
+| Search | Full-text search across **every message in every session**, powered by the SQLite FTS5 index Hermes already maintains. Type a query, press Enter, and matching conversations appear with a snippet; click one to resume it. |
+| Pin / rename | Right-click a session to pin it, or use the inline rename field. **Pinning writes the same flag Hermes Desktop's own sidebar reads**, so a pin set here appears there without a second store. |
 | Usage | Today and 7-day token totals with Hermes' own cost estimates, broken down by model. |
 | Kanban | Read-only board summaries from `hermes kanban boards list --json`. |
 | TUI modal | Quake-style drop-down terminal running `hermes --tui` on a Hyprland special workspace; survives shell restarts. |
@@ -52,6 +54,17 @@ Open the bar settings for the widget:
 |---|---|---|
 | `showKanban` | true | Show the Kanban section |
 | `notify` | true | Desktop notifications for agent events |
+
+## Panel keys
+
+| Key | Action |
+|---|---|
+| `Enter` in the search field | Run the search |
+| `Escape` in the search field | Clear the search |
+| `Enter` in the rename field | Commit the new title |
+| `Escape` in the rename field | Cancel the rename |
+| Right-click a session row | Pin / unpin that session |
+| Left-click a session row | Resume it in the TUI |
 
 ## Privacy
 
