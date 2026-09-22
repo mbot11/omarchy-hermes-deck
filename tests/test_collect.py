@@ -781,6 +781,11 @@ class InventoryTests(unittest.TestCase):
             # value, so the prompt's own text (including a line that looks like a
             # job header) is part of the name. This is the case that used to
             # fabricate a job named "evil" and drop this one.
+            # The prompt's continuation lines are consumed as the Name value. A
+            # 2-space `[badge]` line is hostile because it LOOKS like a header; a
+            # 4-space `Name:`/`Schedule:` line is field-shaped and must NOT be
+            # read as this or any other job's fields — the real Schedule (0 3 * * *)
+            # is the one reported, not the injected "0 0 * * *".
             {"name": "ok\ninjected [paused]\nevil", "schedule": "0 3 * * *",
              "paused": False},
         ])
