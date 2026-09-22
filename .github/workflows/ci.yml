@@ -13,9 +13,25 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      # Every gate is its own step, so a red run names the rule that broke
+      # rather than one opaque command. This list mirrors CONSTRAINTS.md,
+      # which is the canonical record of the bar; if the two drift, that
+      # file wins.
       - name: Collector behavioral tests
         run: python3 tests/test_collect.py
+
+      - name: Action dispatcher tests
+        run: python3 tests/test_act.py
+
+      - name: QML plain-text floor
+        run: python3 tests/check-qml-plaintext.py .
+
+      - name: Tree hygiene and manifest contract
+        run: bash tests/check-tree.sh .
+
       - name: Syntax checks
         run: |
           bash -n scripts/deck-act
           python3 -m py_compile scripts/deck-collect
+          python3 -m py_compile tests/check-qml-plaintext.py
