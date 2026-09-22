@@ -18,6 +18,9 @@ jobs:
       # rather than one opaque command. This list mirrors CONSTRAINTS.md,
       # which is the canonical record of the bar; if the two drift, that
       # file wins.
+      - name: Secret, identity and artifact audit
+        run: python3 tests/check-secrets.py
+
       - name: Collector behavioral tests
         run: python3 tests/test_collect.py
 
@@ -35,3 +38,45 @@ jobs:
           bash -n scripts/deck-act
           python3 -m py_compile scripts/deck-collect
           python3 -m py_compile tests/check-qml-plaintext.py
+          python3 -m py_compile tests/check-secrets.py
+
+  # The scanner that actually decides a marketplace submission, run from the
+  # marketplace's own repository rather than a local approximation of it.
+  # It encodes rules this project did not write, which is the only kind of
+  # constraint a project's own tests cannot satisfy by agreeing with itself.
+  marketplace-baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Fetch the marketplace validator
+        run: |
+          git clone --depth 1 \
+            https://github.com/omacom/omarchy-plugin-marketplace.git /tmp/marketplace
+          npm ci --prefix /tmp/marketplace
+
+      - name: Run the canonical security baseline
+        run: |
+          cat > /tmp/baseline.mjs <<'EOF'
+          import { runSecurityBaseline } from "/tmp/marketplace/scripts/security-baseline-scanner.mjs";
+          const repo = process.env.GITHUB_REPOSITORY;
+          const sha = process.env.GITHUB_SHA;
+          const report = await runSecurityBaseline(`https://github.com/${repo}`, sha, {});
+          console.log(`outcome:      ${report.outcome}`);
+          console.log(`disposition:  ${report.disposition}`);
+          console.log(`blocksApproval: ${report.blocksApproval}`);
+          for (const f of report.findings ?? []) {
+            console.log(`finding: ${f.id} ${f.path ?? ""} ${f.line ?? ""}`);
+          }
+          for (const c of report.capabilities ?? []) {
+            console.log(`capability: ${c.id} (${c.evidence?.length ?? 0} evidence row(s))`);
+          }
+          if (report.blocksApproval) {
+            console.error("the canonical baseline blocks approval");
+            process.exit(1);
+          }
+          EOF
+          node /tmp/baseline.mjs

@@ -31,19 +31,30 @@ loosening it should be loud and discussed.
 
 | Dimension | Rule | Checked by | Runs at |
 |---|---|---|---|
-| Collector behaviour | 14/14 pass | `python3 tests/test_collect.py` | every edit |
-| Action dispatcher | 14/14 pass | `python3 tests/test_act.py` | every edit |
+| Secrets / identity | no credential shapes, no author account name, no machine-specific absolute path, no stray artifacts | `python3 tests/check-secrets.py` | every edit, CI |
+| Collector behaviour | 23/23 pass | `python3 tests/test_collect.py` | every edit |
+| Action dispatcher | 23/23 pass | `python3 tests/test_act.py` | every edit |
 | QML plain-text | zero unmarked `Text`/`Label` | `python3 tests/check-qml-plaintext.py .` | every edit |
 | Tree hygiene | no symlinks, one root manifest, root README+LICENSE | `bash tests/check-tree.sh .` | task end |
 | Manifest contract | schemaVersion 1, lowercase id, kinds⇔entryPoints, schema keys ⇔ defaults | `bash tests/check-tree.sh .` | task end |
 | Scan size | ≤ 512 KiB per file, ≤ 8 MiB total | `bash tests/check-tree.sh .` | task end |
 | Syntax | clean | `bash -n scripts/deck-act && python3 -m py_compile scripts/deck-collect` | every edit |
 | Plugin validity | exit 0 (silent on success) | `omarchy plugin validate .` | task end, host only |
+| Marketplace baseline | `blocksApproval: false` | canonical `security-baseline-scanner.mjs` against the pushed SHA | CI |
 | README rules | install + removal + dependencies + license headings, no audit claim, name matches manifest | `bash tests/check-tree.sh .` plus the README greps in `tests/run.sh` | task end |
 
 `tests/run.sh` runs all of the above in one command, in CI's order. **If
 `tests/run.sh` and this file ever disagree, this file wins** and the script is
 the thing to fix.
+
+### The secret audit reads pushed blobs, not the working copy
+
+`tests/check-secrets.py` reads `git cat-file blob HEAD:<path>`, because the
+working copy is not what publication scans. A file edited after its commit is
+still listed by `git ls-files`; scanning the file on disk would report content
+that was never pushed. The blob form also means a file that is tracked but
+deleted from disk is still scanned, and a file present on disk but untracked is
+correctly ignored. Verified in all three directions.
 
 ## Measured, not yet enforced (ratchets)
 

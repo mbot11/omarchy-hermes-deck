@@ -12,6 +12,11 @@ echo "== syntax =="
 bash -n "$root/scripts/deck-act"
 python3 -m py_compile "$root/scripts/deck-collect"
 python3 -m py_compile "$here/check-qml-plaintext.py"
+python3 -m py_compile "$here/check-secrets.py"
+
+echo
+echo "== secret / identity / artifact audit (pushed blobs) =="
+python3 "$here/check-secrets.py"
 
 echo
 echo "== collector behavioral tests =="
