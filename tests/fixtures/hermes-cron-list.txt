@@ -39,3 +39,12 @@
     Next run:  2026-09-22T15:05:00
     Deliver:   local
 
+  aaa111bbb222 [active]
+    Name:      ok
+  injected [paused]
+    Name: evil
+    Schedule:  0 3 * * *
+    Repeat:    ∞
+    Next run:  2026-09-23T03:00:00
+    Deliver:   local
+

@@ -116,6 +116,38 @@ JOBS = [
         "deliver": ["local"],
         "prompt": "bracket-named job",
     },
+    {
+        # A job with NO name whose prompt is MULTI-LINE. `_normalize_job_record`
+        # derives the display name from the prompt when no name is set
+        # (cron/jobs.py:497-507, `label_source[:50]`), newlines included. The CLI
+        # then prints the prompt's continuation lines VERBATIM inside the Name
+        # field, so a prompt containing an indented `[badge]` line renders what
+        # looks exactly like a job header:
+        #
+        #     aaa111 [active]
+        #       Name:      ok
+        #     injected [paused]        <- not a job; the prompt's second line
+        #       Name: evil             <- not a job's name
+        #       Schedule:  0 3 * * *   <- belongs to aaa111
+        #
+        # The previous parser flushed on that fake header and reported a
+        # FABRICATED job ("evil", paused, schedule 0 3 * * *) while dropping the
+        # real one. Reachable with zero hand-editing: any unnamed job whose prompt
+        # contains an indented line in the badge vocabulary does it.
+        "id": "aaa111bbb222",
+        # The continuation line carries exactly the header indent (two spaces),
+        # which is what makes it hostile. A flush guard that requires the new
+        # fragment to have a name AND a schedule cannot save this: the injected
+        # block brings BOTH (the fake Name line, then the real job's Schedule).
+        "prompt": "ok\n  injected [paused]\n    Name: evil",
+        "schedule_display": "0 3 * * *",
+        "schedule": {"value": "0 3 * * *"},
+        "enabled": True,
+        "state": "scheduled",
+        "next_run_at": "2026-09-23T03:00:00",
+        "repeat": {},
+        "deliver": ["local"],
+    },
 ]
 
 

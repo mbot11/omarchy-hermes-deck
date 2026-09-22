@@ -622,6 +622,7 @@ def parse_cron_list(text) -> list:
         return []
     jobs: list = []
     current: dict | None = None
+    seen: list = []          # every line so far, for the provenance test above
 
     def flush(job):
         # A job is only real when BOTH the fields the panel needs arrived. The
@@ -649,6 +650,7 @@ def parse_cron_list(text) -> list:
             })
 
     for raw_line in text.splitlines():
+        seen.append(raw_line)
         row = raw_line.rstrip()
         if not row.strip():
             continue
@@ -672,10 +674,41 @@ def parse_cron_list(text) -> list:
             # contains `[x]` cannot be mistaken for a header.
             header = re.fullmatch(r"(.*?)\s+\[(\w+)\]", row.strip())
             if header and header.group(1):
+                candidate = {"id": header.group(1).strip(),
+                             "badge": header.group(2).lower(),
+                             "name": "", "schedule": ""}
+                # DISAMBIGUATE against an injected prompt line.
+                #
+                # A job with no `--name` has its display name derived from the
+                # prompt (cron/jobs.py:497-507, `label_source[:50]`), and the CLI
+                # prints the prompt's continuation lines VERBATIM inside the Name
+                # field. So a prompt containing "\n  something [paused]" renders a
+                # line with exactly the header indent and shape. That is not
+                # hypothetical: any unnamed job whose prompt has an indented line
+                # in the badge vocabulary produces it.
+                #
+                # Indentation cannot separate them — both are two spaces. The
+                # discriminator is PROVENANCE: a real header is the first non-blank
+                # line of a fresh job block, so the line before it is blank (or the
+                # banner). An injected line is preceded by the Name field it
+                # continues, which is non-blank and indented. A candidate whose
+                # previous non-blank line is a `Label:` row is prompt text, not a
+                # job, and is consumed as part of the current job's Name.
+                # `seen` already contains THIS line (it is appended at the top of
+                # the loop), so the line before it is seen[-2]. Do NOT skip blank
+                # lines looking for "the previous non-blank": a REAL header is
+                # preceded by a blank line, and skipping blanks made every real
+                # header look like an injection, which merged the whole listing
+                # into one job. Only the IMMEDIATELY previous line matters.
+                prev = seen[-2] if len(seen) >= 2 else ""
+                if re.match(r"^\s{4,}\w+:\s", prev):
+                    if current is not None:
+                        # fold it back into the Name value it belongs to
+                        current["name"] = (current.get("name", "") + "\n"
+                                           + row.strip()).strip()
+                        continue
                 flush(current)
-                current = {"id": header.group(1).strip(),
-                           "badge": header.group(2).lower(),
-                           "name": "", "schedule": ""}
+                current = candidate
                 continue
             # A two-space line that is not a header (the banner's inner line) is
             # skipped, not treated as a field: it would corrupt the current job.
@@ -689,7 +722,15 @@ def parse_cron_list(text) -> list:
             continue
         label, value = field.group(1), field.group(2).strip()
         if label == "Name":
-            current["name"] = value
+            # APPEND, do not overwrite. An unnamed job's prompt becomes the Name
+            # value, and the CLI prints its continuation lines verbatim — so a
+            # multi-line prompt produces more than one `Name:` row. Assigning here
+            # meant the LAST one won, which is how an injected line earlier in the
+            # same prompt captured the job's name. The first row is the real name.
+            if current["name"]:
+                current["name"] = current["name"] + "\n" + value
+            else:
+                current["name"] = value
         elif label == "Schedule":
             current["schedule"] = value
         # Every other label (Repeat, Next run, Deliver, Last run, Skills, …) is
