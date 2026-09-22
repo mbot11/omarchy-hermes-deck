@@ -16,6 +16,7 @@ python3 -m py_compile "$here/check-secrets.py"
 
 echo
 echo "== secret / identity / artifact audit (pushed blobs) =="
+python3 "$here/check-secrets.py" --self-test
 python3 "$here/check-secrets.py"
 
 echo

@@ -19,7 +19,9 @@ jobs:
       # which is the canonical record of the bar; if the two drift, that
       # file wins.
       - name: Secret, identity and artifact audit
-        run: python3 tests/check-secrets.py
+        run: |
+          python3 tests/check-secrets.py --self-test
+          python3 tests/check-secrets.py
 
       - name: Collector behavioral tests
         run: python3 tests/test_collect.py
