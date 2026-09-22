@@ -586,64 +586,101 @@ def slow_kanban(cache: dict, include: bool) -> dict:
 
 # ── Main ────────────────────────────────────────────────────────────────
 
-def parse_cron_list(text: str) -> list:
+def parse_cron_list(text) -> list:
     """Parse `hermes cron list` into jobs.
 
-    `hermes cron list` has no --json, so this reads the columnar text. That is
-    brittle against a Hermes that reformats its output, so the parser is
-    deliberately permissive: a row it cannot understand is skipped rather than
-    raised, and the panel then shows fewer jobs instead of nothing. The header
-    row and any rule/separator line are dropped by name.
+    `hermes cron list` has no --json, so this reads the printed text. The real
+    format is a LABEL BLOCK per job, not a table, and not column-aligned beyond
+    the first pair:
+
+        Scheduled Jobs:  ----------------------------------------
+          ID: a1b2c3d4        Name: nightly-backup
+          State: active
+          Schedule: 0 3 * * * (daily)
+          Next run: 2026-09-23T03:00:00
+          Prompt: back up the vault
+
+    Verified against the installed CLI's formatter (hermes_cli/cli_commands_mixin,
+    `_cron_list`). An earlier version of this function expected an invented
+    `NAME SCHEDULE NEXT RUN STATUS` table and therefore reported `Schedule:` as
+    every job's name — the fixture matched the parser instead of the CLI, so its
+    tests passed while the panel showed no job names at all.
+
+    Every value is taken from its own label, so a numeric Next-run or a job whose
+    name contains `paused` cannot corrupt the fields. Any input at all is
+    accepted: this returns a list or an empty list, never raises, because a raise
+    on the inventory path would blank the whole panel.
     """
+    if not isinstance(text, str):
+        return []
     jobs: list = []
-    for line in (text or "").splitlines():
+    current: dict | None = None
+
+    def flush(job):
+        if job and job.get("name"):
+            jobs.append({
+                "name": clip(job["name"], 120),
+                "schedule": clip(job.get("schedule", ""), 40),
+                # State is its own field: `paused` and `completed` are the
+                # non-running states the CLI reports.
+                "paused": job.get("state", "").lower() in {"paused", "completed"},
+                "running": job.get("state", "").lower() in {"active", "running"},
+            })
+
+    for line in text.splitlines():
         row = line.strip()
-        if not row or row.startswith(("-", "─", "=", "#")):
+        if not row:
             continue
-        fields = row.split()
-        if len(fields) < 2:
+        # `ID: ... Name: ...` starts a job. Both labels can share a line.
+        match = re.match(r"^ID:\s*(\S+)(?:\s+Name:\s*(.+?))?$", row)
+        if match:
+            flush(current)
+            current = {"id": match.group(1), "name": (match.group(2) or "").strip()}
             continue
-        if fields[0].upper() in {"NAME", "ID", "JOB", "JOB_ID"}:
-            continue  # header row
-        # Accept the standard five-field cron (`0 3 * * *`) or a named schedule
-        # (`@daily`, `hourly`). Anything else means this is not a job row.
-        #
-        # The exact columnar format is NOT verifiable on the machine this was
-        # written on: `hermes cron list` there prints "No scheduled jobs." So
-        # this accepts the two documented schedule shapes and drops everything
-        # else, which degrades to an empty list rather than to wrong data.
-        schedule_len = 0
-        for field in fields[1:]:
-            if re.fullmatch(r"[0-9*/,\-]+", field) or re.fullmatch(r"@[a-z]+", field.lower()) \
-               or field.lower() in {"hourly", "daily", "weekly", "monthly"}:
-                schedule_len += 1
-            else:
-                break
-        if schedule_len == 0:
-            continue
-        jobs.append({
-            "name": clip(fields[0], 120),
-            "schedule": clip(" ".join(fields[1:1 + schedule_len]), 40),
-            "paused": "paused" in row.lower(),
-            "running": "running" in row.lower(),
-        })
+        if current is None:
+            continue  # header, separator, or the empty-state message
+        if row.startswith("Name:"):
+            current["name"] = row[len("Name:"):].strip()
+        elif row.startswith("State:"):
+            current["state"] = row[len("State:"):].strip()
+        elif row.startswith("Schedule:"):
+            # Strip the trailing "(daily)" repeat hint the CLI appends.
+            current["schedule"] = re.sub(r"\s*\([^)]*\)\s*$", "",
+                                         row[len("Schedule:"):].strip())
+        # Next run / Prompt / Last run / Skills are deliberately ignored: none
+        # is needed by the panel and each is free text that could carry anything.
+    flush(current)
     return jobs[:50]
 
 
-def collect_cron(cache: dict, refresh: bool) -> list:
+def cached_cron(cache: dict) -> list:
+    """The last known inventory, from the on-disk cache only.
+
+    No subprocess, so this is safe on the fast path — which is the point: the
+    fast tick runs every 5 s and inventory is only refreshed every 60 s, so a
+    fast tick that reported an empty list would erase the Cron section between
+    refreshes and make it flicker. Reading the cache keeps the section stable
+    while still never spawning anything (invariant 2).
+    """
+    stale = cache.get("cron")
+    value = stale.get("value") if isinstance(stale, dict) else None
+    return value if isinstance(value, list) else []
+
+
+def collect_cron(cache: dict) -> list:
     """Scheduled jobs and whether each is paused.
 
     Inventory only: pausing and resuming are actions and live in deck-act.
-    Cached like the other slow fields so the panel can refresh frequently
-    without paying a CLI start on every tick.
+    There is no `refresh` parameter: this is only ever called on an explicit
+    --include-inventory request, and the TTL below is what keeps the CLI call
+    from repeating on every panel tick.
+
+    `hermes cron list` has no --json, so the output is text-parsed — see
+    parse_cron_list for the format and why it is written the way it is.
     """
     cached = cache_get(cache, "cron", TTL_CRON)
     if isinstance(cached, list):
         return cached
-    if not refresh:
-        stale = cache.get("cron")
-        value = stale.get("value") if isinstance(stale, dict) else None
-        return value if isinstance(value, list) else []
     hermes = resolve_hermes()
     if not hermes:
         return []
@@ -669,6 +706,9 @@ def collect(include_slow: bool, include_kanban: bool, search_query: str = "", in
         "auth": [],
         "kanban": {"available": False, "boards": []},
         "search": {"query": "", "results": [], "totalHits": 0},
+        # Always present. The fast path fills it from the cache (see below), so
+        # the value survives the ticks between inventory refreshes.
+        "cron": [],
         "activity": {"working": False, "lastMessageAt": None, "secondsSinceLastMessage": None},
         "usage": {},
         "sessions": [],
@@ -684,10 +724,13 @@ def collect(include_slow: bool, include_kanban: bool, search_query: str = "", in
     snapshot["auth"] = slow_auth(cache, include_slow)
     snapshot["kanban"] = slow_kanban(cache, include_kanban)
     # Inventory is opt-in and separate from --include-slow: it costs a CLI call,
-    # so it must never appear on the fast path (invariant 2). It is only added
-    # to the payload when asked for, which the test suite pins.
+    # so the fast path must not fetch it (invariant 2). The key is always in the
+    # payload; only its contents depend on the flag, which keeps the schema
+    # stable across a fast and a slow tick.
     if include_inventory:
-        snapshot["cron"] = collect_cron(cache, True)
+        snapshot["cron"] = collect_cron(cache)
+    else:
+        snapshot["cron"] = cached_cron(cache)
     model = parse_model_config() if CONFIG_PATH.exists() else ""
     if model:
         snapshot["model"], snapshot["modelSource"] = model, "config"

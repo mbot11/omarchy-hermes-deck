@@ -95,7 +95,9 @@ Item {
 
   function acceptCollect(text) {
     try {
-      var next = DeckState.accept(text)
+      // The previous cron list is handed in so a fast tick — which carries no
+      // inventory — does not erase what the last slow tick found.
+      var next = DeckState.accept(text, root.cron)
       handleTransitions(next)
       root.state = next
       root.revision++

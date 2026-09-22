@@ -424,14 +424,36 @@ class InventoryTests(unittest.TestCase):
         for junk in ("SCHEDULE", "STATUS", "NEXT"):
             self.assertNotIn(junk, names)
 
-    def test_inventory_is_absent_from_the_fast_path(self) -> None:
-        """The fast path must not grow a subprocess.
+    def test_fast_path_carries_cached_inventory_without_a_subprocess(self) -> None:
+        """The invariant is 'spawns nothing', not 'omits the key'.
 
-        INVARIANT 2: `deck-collect` without --include-slow spawns nothing. A
-        cron inventory needs the CLI, so it must never appear by default.
+        INVARIANT 2: `deck-collect` without --include-inventory spawns no
+        `hermes` process. The key is still present — filled from the on-disk
+        cache — because the fast tick runs every 5 s and inventory refreshes
+        every 60 s: an empty list on the fast tick erased the panel's Cron
+        section between refreshes and made it flicker.
         """
-        snap = run_collect(self.home, self.state)
-        self.assertNotIn("cron", snap, "inventory leaked into the fast path")
+        slow = run_collect(self.home, self.state, "--include-inventory")
+        self.assertEqual(len(slow["cron"]), 2)
+
+        fast = run_collect(self.home, self.state)  # no inventory flag
+        self.assertIn("cron", fast)
+        self.assertEqual([j["name"] for j in fast["cron"]],
+                         [j["name"] for j in slow["cron"]],
+                         "the fast tick lost the inventory the slow tick found")
+
+    def test_fast_path_resolves_no_hermes_binary(self) -> None:
+        """Prove it by observation: a recording stub sees no call."""
+        stub_dir = Path(self.tmp.name) / "bin"
+        stub_dir.mkdir()
+        record = Path(self.tmp.name) / "calls.log"
+        stub = stub_dir / "hermes"
+        stub.write_text(f'#!/usr/bin/env bash\necho "$@" >> {record}\nexit 0\n')
+        stub.chmod(0o755)
+
+        run_collect(self.home, self.state, extra_env={"PATH": str(stub_dir)})
+        calls = record.read_text().strip() if record.exists() else ""
+        self.assertEqual(calls, "", f"the fast path spawned: {calls!r}")
 
     def test_inventory_survives_a_missing_cli(self) -> None:
         """A broken `hermes` binary must degrade, not crash the panel."""
@@ -442,12 +464,23 @@ class InventoryTests(unittest.TestCase):
         self.assertIn("cron", snap)
         self.assertEqual(snap["cron"], [])
 
-    def test_cron_parser_handles_real_shapes(self) -> None:
-        """The parser is text-based, so pin the shapes it accepts and rejects.
+    def test_cron_parser_reads_the_real_output_format(self) -> None:
+        """The parser must read what `hermes cron list` actually prints.
 
-        The columnar format could not be verified against a live multi-job
-        install (this machine has no jobs), so the accepted shapes are pinned
-        here and everything else must be dropped rather than guessed at.
+        The real format is a label block per job, with no column header and no
+        table — verified against the installed CLI's own formatter
+        (hermes_cli/cli_commands_mixin.py, `_cron_list`):
+
+            Scheduled Jobs:  -----
+              ID: abc        Name: nightly-backup
+              State: active
+              Schedule: 0 3 * * * (daily)
+              Next run: 2026-09-23T03:00:00
+
+        The FIRST implementation of this parser was written against an invented
+        `NAME SCHEDULE NEXT RUN STATUS` table and reported `Schedule:` as every
+        job's name. That fixture matched the parser, not the CLI, so the tests
+        passed while the feature was broken.
         """
         import importlib.machinery
         import importlib.util
@@ -458,28 +491,61 @@ class InventoryTests(unittest.TestCase):
         loader.exec_module(module)
         parse = module.parse_cron_list
 
-        table = (
-            "NAME              SCHEDULE     NEXT RUN   STATUS\n"
-            "nightly-backup    0 3 * * *    in 8h      active\n"
-            "weekly-digest     0 9 * * 1    in 3d      paused\n"
+        real = (
+            "Scheduled Jobs:  " + "-" * 40 + "\n"
+            "  ID: a1b2c3d4        Name: nightly-backup\n"
+            "  State: active\n"
+            "  Schedule: 0 3 * * * (daily)\n"
+            "  Next run: 2026-09-23T03:00:00\n"
+            "  Prompt: back up the vault\n"
+            "\n"
+            "  ID: e5f6a7b8        Name: weekly-digest\n"
+            "  State: paused\n"
+            "  Schedule: 0 9 * * 1 (weekly)\n"
+            "  Next run: 2026-09-28T09:00:00\n"
+            "  Prompt: summarize the week\n"
+            "\n"
         )
-        jobs = parse(table)
-        self.assertEqual([j["name"] for j in jobs], ["nightly-backup", "weekly-digest"])
+        jobs = parse(real)
+        self.assertEqual([j["name"] for j in jobs], ["nightly-backup", "weekly-digest"],
+                         f"wrong names parsed: {jobs!r}")
+        self.assertEqual(jobs[0]["schedule"], "0 3 * * *")
         self.assertFalse(jobs[0]["paused"])
-        self.assertTrue(jobs[1]["paused"])
+        self.assertTrue(jobs[1]["paused"], "the paused state was not read")
 
-        named = parse("cleanup   @daily   in 4h   active\nhourly-ping   hourly   in 1h   active\n")
-        self.assertEqual([j["name"] for j in named], ["cleanup", "hourly-ping"])
+    def test_cron_parser_never_reports_a_label_as_a_name(self) -> None:
+        """A regression guard for the exact bug that shipped: 'Schedule:' as name."""
+        import importlib.machinery
+        import importlib.util
 
-        # The live machine's actual output: an empty-state message, not a job.
-        self.assertEqual(parse(
-            "No scheduled jobs.\n"
-            "Create one with 'hermes cron create ...' or the /cron command in chat.\n"
-        ), [])
+        loader = importlib.machinery.SourceFileLoader("deck_collect", str(COLLECT))
+        spec = importlib.util.spec_from_loader("deck_collect", loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
 
-        for junk in ("", "!!! ??? ###", "   \n\n  ", "oneword"):
-            with self.subTest(junk=junk):
-                self.assertEqual(parse(junk), [])
+        real = (
+            "  ID: x1        Name: real-job\n"
+            "  State: active\n"
+            "  Schedule: 0 3 * * * (daily)\n"
+        )
+        for job in module.parse_cron_list(real):
+            self.assertNotIn(job["name"].rstrip(":"),
+                             {"Schedule", "State", "Next", "ID", "Prompt", "Name", "Last"},
+                             f"a field label leaked into the job name: {job!r}")
+
+    def test_cron_parser_survives_hostile_input(self) -> None:
+        """No input may raise: a raise here blanks the whole panel."""
+        import importlib.machinery
+        import importlib.util
+
+        loader = importlib.machinery.SourceFileLoader("deck_collect", str(COLLECT))
+        spec = importlib.util.spec_from_loader("deck_collect", loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+
+        for junk in (None, 12345, [], {}, b"bytes", "", "   \n\n  ", "!!!", "Name:"):
+            with self.subTest(junk=repr(junk)[:30]):
+                self.assertIsInstance(module.parse_cron_list(junk), list)
 
 
 if __name__ == "__main__":

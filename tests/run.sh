@@ -77,14 +77,15 @@ fi
 # to ignore it, so this reports the count and fails only if it grows.
 echo
 echo "== qmllint (ratchet: must not grow) =="
-# Raised 178 -> 197 when the Cron section landed (+22 in Panel.qml). The new
-# warnings are the same two classes already documented above and prove out as
-# false positives: Omarchy's own first-party agents/Panel.qml reports 35
+# Raised 178 -> 193 when the Cron section landed, then lowered 197 -> 193 after
+# hoisting the section's derived properties removed four warnings. The remaining
+# ones are the same two classes documented above and prove out as false
+# positives: Omarchy's own first-party agents/Panel.qml reports 35
 # missing-property and 61 unqualified under this identical invocation, and the
 # missing-property hits are all against `Style` and `bar`, whose members qmllint
 # cannot see through the qs.Commons / qs.Ui singletons. A real QML error is
 # still caught: it is reported as an Error, and this counts only `^Warning:`.
-QML_BUDGET_TOTAL=197
+QML_BUDGET_TOTAL=193
 lint_one() {
   local subject="$1" scratch
   scratch="$(mktemp -d)"

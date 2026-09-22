@@ -39,8 +39,10 @@ scripts/deck-collect (python3 stdlib only)
 │   ├── hermes auth list        (TTL 10 min)
 │   ├── hermes config get model.default   (TTL 10 min, only if YAML parse empty)
 │   └── hermes kanban boards list --json  (TTL 60 s, only with --include-kanban)
-├── opt-in, only with --include-inventory:
-│   └── hermes cron list              (TTL 5 min; inventory only, no control)
+├── every snapshot carries `cron` (see the note below):
+│   └── with --include-inventory: hermes cron list   (TTL 5 min, inventory only)
+│       without it: the last known list, read from the on-disk cache — no
+│       subprocess, so the no-spawn invariant holds on the fast path
 └── opt-in, only with --include-search <query>:
     └── messages_fts MATCH (every token quoted) joined to messages + sessions,
         deduplicated per session, snippet() over column 0, capped at 20
@@ -110,3 +112,15 @@ package-managed Omarchy files; or manage Hermes sessions beyond opening them,
 renaming them, and setting their pin flag. It never archives or deletes a
 session. Remote-machine support rides on Hermes' own mechanisms
 (SSH, hermes serve), never on a plugin-bundled bridge daemon.
+
+### `cron` is in every snapshot, and the fast path reads it from the cache
+
+The panel polls on a 5 s fast timer and a 60 s slow timer, and inventory is only
+refreshed on the slow one. When the fast payload omitted `cron`, the consumer saw
+a missing key, reset its list to empty, and the Cron section flickered between
+populated and gone roughly eleven times per refresh. The collector therefore
+emits `cron` unconditionally: the inventory path fills it from `hermes cron
+list`, and the fast path fills it from the on-disk cache, which is a file read
+and spawns nothing. `DeckState.accept` additionally carries the previous list
+forward when a payload omits the key entirely, so an older collector cannot
+erase it either. An explicitly empty list is honoured as the real fact it is.

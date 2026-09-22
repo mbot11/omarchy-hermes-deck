@@ -78,6 +78,46 @@ const junk = deck.accept(JSON.stringify({
 }));
 check("drops malformed entries rather than the whole list", junk.cron.length, 1);
 
+// ── the flicker: a fast tick must not erase the inventory ──────────────────
+// Inventory is fetched on the 60 s slow tick but the fast tick runs every 5 s.
+// When `accept` reset `cron` to [] on a payload without the key, the section was
+// destroyed ~11 times more often than it was rebuilt, so it visibly flickered.
+console.log("fast tick does not erase the inventory");
+const withJobs = deck.accept(JSON.stringify({
+  schemaVersion: 2, id: "hermes-deck",
+  cron: [{ name: "nightly", schedule: "0 3 * * *", paused: false },
+         { name: "weekly", schedule: "0 9 * * 1", paused: true }],
+}));
+check("slow tick populated the list", withJobs.cron.length, 2);
+
+// The collector's fast path now carries the cached list, so this is the real
+// sequence: a populated fast payload keeps the list populated.
+const afterFast = deck.accept(
+  JSON.stringify({
+    schemaVersion: 2, id: "hermes-deck",
+    cron: [{ name: "nightly", schedule: "0 3 * * *", paused: false },
+           { name: "weekly", schedule: "0 9 * * 1", paused: true }],
+  }),
+  withJobs.cron,
+);
+check("fast tick retained the list", afterFast.cron.length, 2);
+check("fast tick retained the paused count",
+  deck.cronSummary(afterFast.cron), { total: 2, paused: 1 });
+
+// Belt: a payload that omits the key entirely (older collector, truncated
+// payload) must not erase what we already know.
+const afterAbsent = deck.accept(
+  JSON.stringify({ schemaVersion: 2, id: "hermes-deck" }),
+  withJobs.cron,
+);
+check("an absent key retains the previous list", afterAbsent.cron.length, 2);
+
+const afterEmpty = deck.accept(
+  JSON.stringify({ schemaVersion: 2, id: "hermes-deck", cron: [] }),
+  withJobs.cron,
+);
+check("an explicit empty list is honoured, not retained", afterEmpty.cron.length, 0);
+
 // ── cronSummary: what the panel header renders ─────────────────────────────
 console.log("cronSummary");
 check("counts total and paused",

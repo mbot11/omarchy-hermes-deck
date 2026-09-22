@@ -79,10 +79,16 @@ CONTEXT_PATTERNS: list[tuple[str, str]] = [
 # OCR artefacts that look like a finding but are not: this file's own pattern
 # literals cannot appear in pixels, but tesseract does mangle glyphs, and a
 # version string or a hash is not a secret.
-OCR_NOISE = [
-    "hermes-deck", "hermes deck", "omarchy", "quickshell",
-    "deepseek", "ollama", "telegram", "gateway", "providers",
-]
+# Deliberately no OCR-noise allowlist. One existed and was removed: any
+# exemption on a pre-publish scanner has to prove it cannot hide a real finding,
+# and both shapes tried here could. A per-line exemption suppressed a credential
+# on any line containing "gateway" or "providers"; a span-scoped one suppressed
+# a credential whose *value* contained a product word
+# (`api_key = ollama_cloud_prod_...`) and any identity under a home directory
+# named after the distro. Over-reporting is the correct
+# failure direction here: a false positive costs one review of a cropped image,
+# a false negative publishes the secret. If OCR noise ever becomes a real
+# problem, fix it by reading the image at higher resolution, not by whitelisting.
 
 METADATA_KEYS_OF_INTEREST = (
     "author", "artist", "comment", "copyright", "description", "software",
@@ -184,39 +190,14 @@ def _which(name: str) -> bool:
     return False
 
 
-def _overlaps_benign(text: str, match: "re.Match[str]") -> bool:
-    """True only when the match itself sits inside a known product name.
-
-    OCR mangles a product name into something shaped like an address, so a
-    narrow exemption is legitimate. It must be scoped to the matched span: a
-    product name elsewhere on the line says nothing about the credential beside
-    it, and a terminal line printing an API key very often also says `gateway`
-    or `providers`. The previous per-line test therefore exempted exactly the
-    lines that mattered.
-    """
-    low, high = match.span()
-    lowered = text.lower()
-    for noise in OCR_NOISE:
-        start = lowered.find(noise)
-        while start != -1:
-            if start < high and start + len(noise) > low:
-                return True
-            start = lowered.find(noise, start + 1)
-    return False
-
-
 def scan_text(text: str, origin: str) -> list[tuple[str, str, str]]:
     findings: list[tuple[str, str, str]] = []
     for line in text.split("\n"):
         if not line.strip():
             continue
         for label, pattern in SECRET_PATTERNS + IDENTITY_CHECKS + CONTEXT_PATTERNS:
-            for match in re.finditer(pattern, line):
-                if _overlaps_benign(line, match):
-                    continue
+            if re.search(pattern, line):
                 findings.append((origin, label, line.strip()[:110]))
-                break  # one finding per label per line
-        # Never exempted: an account name is never OCR noise.
         for username in author_usernames():
             if username in line:
                 findings.append((origin, "author account name", line.strip()[:110]))

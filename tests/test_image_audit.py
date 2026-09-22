@@ -39,9 +39,27 @@ BYPASS_CASES = [
     ("email beside 'omarchy'", "omarchy contact ceo@example.com"),
 ]
 
-# These MUST stay exempt: OCR reading a product name as an address.
-BENIGN_CASES = [
-    ("product name as an address", "deepseek-v4.1-flash@ollama-cloud"),
+# A credential whose VALUE happens to contain a product word. These were
+# silently whitelisted by a span-overlap exemption: the product name inside the
+# secret was enough to suppress the finding. Removed rather than refined — a
+# pre-publish gate must err toward reporting.
+VALUE_CONTAINS_NOISE_CASES = [
+    ("api key containing 'ollama'", "api_key = ollama_cloud_prod_a1b2c3d4e5f6"),
+    ("api key containing 'gateway'", "gateway api_key = gateway_prod_a1b2c3d4e5f6g7h8"),
+    ("token containing 'telegram'", "token = telegram_bot_abcdefghijklmnop"),
+    ("secret containing our own name", "secret = hermes-deck-live-abcdefghijklmnop"),
+    ("password containing 'quickshell'", "password = quickshell-admin-abcdefghij"),
+    ("token containing 'omarchy'", "token = omarchy_service_abcdefghijkl"),
+]
+
+# A user or host named after the distro. Plausible on an Omarchy box, and it is
+# exactly the identity the audit exists to catch.
+# Assembled from fragments: these values are themselves the shape the scanner
+# hunts, so a literal here would make the audit flag its own fixture.
+DISTRO_NAMED_IDENTITY_CASES = [
+    ("home dir named 'omarchy'", "/home/" + "omarchy" + "/Work/secret-client"),
+    ("home dir named 'quickshell'", "/home/" + "quickshell" + "/notes"),
+    ("prompt for a user named 'omarchy'", "omarchy" + "@workstation:~$ ls"),
 ]
 
 
@@ -52,13 +70,34 @@ class TestNoiseExemptionIsScoped(unittest.TestCase):
                 hits = cis.scan_text(line, "t")
                 self.assertTrue(hits, f"false CLEAN on: {line!r}")
 
-    def test_product_name_address_stays_exempt(self):
-        for label, line in BENIGN_CASES:
+    def test_credential_containing_a_product_word_is_reported(self):
+        """A product word inside a value must not suppress the finding.
+
+        The earlier implementation exempted any match whose span overlapped an
+        OCR-noise word, which whitelisted `api_key = ollama_cloud_prod_...`.
+        Over-reporting is the correct failure direction for a publish gate.
+        """
+        for label, line in VALUE_CONTAINS_NOISE_CASES:
             with self.subTest(label):
-                self.assertFalse(
-                    cis.scan_text(line, "t"),
-                    f"benign product name reported as a finding: {line!r}",
-                )
+                self.assertTrue(cis.scan_text(line, "t"),
+                                f"credential whitelisted by a product word: {line!r}")
+
+    def test_distro_named_identity_is_reported(self):
+        for label, line in DISTRO_NAMED_IDENTITY_CASES:
+            with self.subTest(label):
+                self.assertTrue(cis.scan_text(line, "t"),
+                                f"distro-named identity missed: {line!r}")
+
+    def test_distro_name_alone_is_not_a_finding(self):
+        """The *word* 'omarchy' is not a finding; only an identity built on it is.
+
+        Without this the scanner would report the project's own name in any
+        documentation screenshot, which is noise rather than a leak.
+        """
+        for line in ("Hermes Deck for Omarchy", "the omarchy shell plugin"):
+            with self.subTest(line):
+                self.assertFalse(cis.scan_text(line, "t"),
+                                 f"the distro name alone was reported: {line!r}")
 
 
 class TestMetadataPlaceholderIsExact(unittest.TestCase):
@@ -130,7 +169,9 @@ class TestTildePaths(unittest.TestCase):
                                  f"bare tilde reported: {line!r}")
 
     def test_absolute_home_path_still_reported(self):
-        self.assertTrue(cis.scan_text("cd /home/realname/Work", "t"))
+        # Assembled so this test's own fixture is not itself a home path the
+        # audit has to allowlist.
+        self.assertTrue(cis.scan_text("cd /home/" + "acct" + "name/Work", "t"))
 
     def test_a_lone_tilde_in_prose_is_not_a_finding(self):
         """`~` is also a normal character. Only a path-like use is a finding."""

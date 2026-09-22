@@ -42,19 +42,53 @@ EOF
     case "${2:-}" in
       pin | unpin) exit 0 ;;
       rename) [[ -n ${3:-} && -n ${4:-} ]] && exit 0; exit 64 ;;
-      archive) [[ -n ${3:-} ]] && exit 0; exit 64 ;;
+      # `archive` is bulk-only: the real CLI takes NO positional session id and
+      # rejects one outright (exit 2, "unrecognized arguments"). The stub mirrors
+      # that, so a future caller that passes an id is caught here rather than in
+      # production. `delete` is the subcommand that does take a positional id.
+      archive)
+        # Walk the args, skipping the value of each --flag. A bare token that is
+        # not consumed as a flag value is a positional id, which must fail.
+        args=("${@:3}")
+        i=0
+        while (( i < ${#args[@]} )); do
+          if [[ ${args[i]} == --* ]]; then
+            if [[ ${args[i]} == *=* ]]; then
+              i=$((i + 1))          # --flag=value carries its own value
+            else
+              i=$((i + 2))          # --flag value
+            fi
+          else
+            exit 2                  # bare positional id -> unrecognized
+          fi
+        done
+        exit 0 ;;
+      delete) [[ -n ${3:-} ]] && exit 0; exit 64 ;;
       *) exit 64 ;;
     esac
     ;;
   cron)
-    # `hermes cron list` has no --json: the collector parses this text, so the
-    # stub reproduces the real columnar output including a paused marker.
+    # `hermes cron list` has no --json. The stub reproduces the REAL format,
+    # copied from the installed CLI's own formatter (hermes_cli/cli_commands_mixin,
+    # `_cron_list`): a label block per job, NOT a column-aligned table. The first
+    # version of this stub invented a table, which made a broken parser look
+    # correct.
     case "${2:-}" in
       list)
         cat <<'EOF'
-NAME              SCHEDULE     NEXT RUN             STATUS
-nightly-backup    0 3 * * *    in 8h                active
-weekly-digest     0 9 * * 1    in 3d                paused
+Scheduled Jobs:  --------------------------------------------------------------------------------
+  ID: a1b2c3d4        Name: nightly-backup
+  State: active
+  Schedule: 0 3 * * * (daily)
+  Next run: 2026-09-23T03:00:00
+  Prompt: back up the vault
+
+  ID: e5f6a7b8        Name: weekly-digest
+  State: paused
+  Schedule: 0 9 * * 1 (weekly)
+  Next run: 2026-09-28T09:00:00
+  Prompt: summarize the week
+
 EOF
         ;;
       pause | resume | run) exit 0 ;;

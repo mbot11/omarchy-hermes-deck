@@ -210,17 +210,34 @@ class ActTests(unittest.TestCase):
             with self.subTest(action=action):
                 self.assertNotEqual(self.run_act(action).returncode, 0)
 
-    def test_archive_session_requires_a_valid_session_id(self) -> None:
-        for bad in ("short", "-flag", "--all", "", "has spaces!"):
-            with self.subTest(bad=bad):
-                self.assertNotEqual(
-                    self.run_act("archive-session", bad).returncode, 0
-                )
+    def test_archive_session_is_not_an_action(self) -> None:
+        """`hermes sessions archive` is bulk-only and takes no session id.
 
-    def test_archive_session_is_in_the_usage_text(self) -> None:
-        result = self.run_act()
-        output = result.stderr.decode() + result.stdout.decode()
-        self.assertIn("archive-session", output)
+        A per-session `archive-session` action was written, reviewed, and
+        removed: the real CLI rejects a positional id ("unrecognized
+        arguments", exit 2), so the action could never archive anything. The
+        stub now mirrors that contract, and this pins that we do not re-add a
+        button the CLI cannot serve.
+        """
+        self.assertNotEqual(self.run_act("archive-session", "sess-abc").returncode, 0)
+        output = self.run_act().stderr.decode() + self.run_act().stdout.decode()
+        self.assertNotIn("archive-session", output)
+
+    def test_stub_rejects_a_positional_id_for_bulk_archive(self) -> None:
+        """Guard the guard: the fixture must fail the way the real CLI does."""
+        result = subprocess.run(
+            [str(STUB_BIN / "hermes"), "sessions", "archive", "sess-abc"],
+            capture_output=True,
+        )
+        self.assertEqual(result.returncode, 2,
+                         "stub accepted a positional id that the real CLI rejects")
+
+    def test_stub_accepts_bulk_archive_filters(self) -> None:
+        result = subprocess.run(
+            [str(STUB_BIN / "hermes"), "sessions", "archive", "--older-than", "30d"],
+            capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0)
 
 
 if __name__ == "__main__":

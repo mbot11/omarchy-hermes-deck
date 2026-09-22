@@ -27,7 +27,7 @@ function emptyState() {
 
 // Parse and validate one collector snapshot. Throws on malformed input so
 // the caller can keep its previous model (fail-muted).
-function accept(raw) {
+function accept(raw, previousCron) {
   var parsed = JSON.parse(String(raw || ""))
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
     throw new Error("snapshot is not an object")
@@ -36,6 +36,13 @@ function accept(raw) {
   var state = emptyState()
   for (var key in state)
     if (parsed[key] !== undefined) state[key] = parsed[key]
+  // An absent `cron` key means "no inventory in this payload" (an older
+  // collector, a truncated payload, or a fast tick before any refresh), which
+  // is NOT the same fact as "there are no jobs". Carry the caller's last known
+  // list forward, or the panel's Cron section would be erased on every tick
+  // that does not happen to carry inventory.
+  if (parsed.cron === undefined)
+    state.cron = Array.isArray(previousCron) ? previousCron : []
   if (!state.gateway || typeof state.gateway !== "object") {
     state.gateway = { serviceState: "unknown", enabled: "unknown", connectedPlatforms: [], activeAgentsCount: 0 }
   } else {
@@ -48,11 +55,14 @@ function accept(raw) {
   if (!Array.isArray(state.sessions)) state.sessions = []
   if (!Array.isArray(state.auth)) state.auth = []
   if (!state.kanban || typeof state.kanban !== "object") state.kanban = { available: false, boards: [] }
-  // Inventory arrives only when the collector was asked for it (opt-in flag),
-  // so a snapshot from a panel that did not request it must normalise to an
-  // empty list rather than leave `undefined` for the panel to iterate.
+  // Inventory arrives only when the collector was asked for it (opt-in flag).
+  // The collector always sends the key, but an older collector or a truncated
+  // payload might not — and the caller passes the PREVIOUS state's cron in that
+  // case rather than resetting to empty. Resetting would erase the section on
+  // every fast tick, since inventory is only fetched on the slow one.
+  var previousCron = arguments.length > 1 && Array.isArray(arguments[1]) ? arguments[1] : []
   if (!Array.isArray(state.cron)) {
-    state.cron = []
+    state.cron = previousCron
   } else {
     var jobs = []
     for (var j = 0; j < state.cron.length; j++) {
@@ -66,6 +76,8 @@ function accept(raw) {
         running: job.running === true
       })
     }
+    // An explicitly empty list is only meaningful when the source actually
+    // reported one. An absent key falls back above.
     state.cron = jobs
   }
   if (!Array.isArray(state.errors)) state.errors = []

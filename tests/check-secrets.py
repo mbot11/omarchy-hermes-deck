@@ -122,14 +122,18 @@ def read_blob(path: str) -> bytes | None:
     bytes that were never published. A tracked-but-deleted file still needs
     scanning, which the blob form handles.
 
-    The revision is `HEAD` when the path exists there, and the index otherwise.
-    An audit of uncommitted work is the normal case during development, and the
-    index is what a `git commit` would actually capture — so falling back to it
-    audits the staged content rather than refusing to run. `HEAD` is preferred
-    because it is what was published.
+    The revision is the INDEX when the path exists there, and `HEAD` otherwise.
+    The index is what a `git commit` would capture, so it is the correct subject
+    for a gate that runs before committing; `HEAD` covers a tracked path that is
+    not staged. See the comment below for why the order is this way round.
     """
-    for revision in ("HEAD", None):
-        ref = f"{revision}:{path}" if revision else f":{path}"
+    # The INDEX first, then HEAD. The index is what a `git commit` would capture,
+    # which is the content this gate exists to judge — auditing HEAD instead
+    # means a staged fix is invisible and the gate reports the previous commit's
+    # problem forever. HEAD is the fallback for a tracked path that is not staged
+    # (already committed and unchanged, or deleted from the working tree).
+    for revision in (None, "HEAD"):
+        ref = f":{path}" if revision is None else f"{revision}:{path}"
         out = subprocess.run(["git", "cat-file", "blob", ref], capture_output=True)
         if out.returncode == 0:
             return out.stdout

@@ -23,7 +23,14 @@ Panel {
   readonly property bool showKanban: setting("showKanban", true) === true
   readonly property bool kanbanVisible: showKanban && service !== null && service.kanban.available === true
   readonly property bool showCron: setting("showCron", true) === true
-  readonly property bool cronVisible: showCron && service !== null && Array.isArray(service.cron) && service.cron.length > 0
+  // Gated on the SETTING only. Whether there are jobs is a separate question —
+  // folding it in here made the "No scheduled jobs" empty state unreachable,
+  // because the section was hidden whenever the list was empty.
+  readonly property bool cronVisible: showCron && service !== null
+  readonly property var cronJobs: service !== null && Array.isArray(service.cron) ? service.cron : []
+  // The header summary, computed once for the section rather than once per
+  // repeater row (every row rendered the same string).
+  readonly property string cronSummaryText: cronCountsSummary(cronJobs)
 
   readonly property var barIdentity: hostWidget || root
   readonly property var deck: service ? service.state : null
@@ -758,7 +765,7 @@ Panel {
         }
 
         Repeater {
-          model: root.cronVisible && Array.isArray(service.cron) ? service.cron.slice(0, 5) : []
+          model: root.cronVisible ? root.cronJobs.slice(0, 5) : []
 
           Row {
             required property var modelData
@@ -783,7 +790,7 @@ Panel {
               width: Math.max(0, parent.width - parent.children[0].implicitWidth - parent.children[1].implicitWidth - parent.children[3].implicitWidth - Style.space(24))
             }
             Text {
-              text: cronCountsSummary(root.service ? root.service.cron : [])
+              text: root.cronSummaryText
               textFormat: Text.PlainText
               color: Qt.darker(root.bar.foreground, 1.4)
               font.family: root.bar.fontFamily
@@ -796,8 +803,7 @@ Panel {
           visible: {
             if (!root.service)
               return false
-            var jobs = root.service.cron
-            return root.showCron && (!Array.isArray(jobs) || jobs.length === 0)
+            return root.cronVisible && root.cronJobs.length === 0
           }
           width: parent.width
           text: "No scheduled jobs"
