@@ -725,6 +725,10 @@ Panel {
               bits.push(DeckState.shortenModel(sessionRow.session.model))
             return bits.join(" · ")
           }
+          // Session titles, workspace paths and model ids are written by Hermes
+          // and by whatever ran in the session, so they are not ours to trust;
+          // AutoText would read markup in them.
+          textFormat: Text.PlainText
           color: Qt.darker(root.bar.foreground, 1.4)
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.caption
