@@ -38,6 +38,35 @@ Custom-endpoint dict-format `model:` blocks are deliberately not parsed
 (they can hide a wrong answer, see hermes-harness#2). The collector falls
 back to `hermes config get model.default`, TTL-cached for 10 minutes.
 
+## Edits to Service.qml do not take effect
+
+Expected, not a bug. This plugin sets `keepLoaded: true` on its `service` kind
+(see the Omarchy shell contract: "the kept instance is not replaced, so code
+changes to a `keepLoaded` service itself only take effect on a shell restart").
+The flag exists so a plugin hot-reload cannot tear down a long-lived service —
+but it also means saving `Service.qml` changes nothing until the shell restarts.
+
+Bar widget changes DO reload on save; service changes do not.
+
+    omarchy-restart-shell
+
+To confirm the running code is the code on disk, check the shell's start time
+against the file's mtime:
+
+    systemctl --user show omarchy-shell -p ActiveEnterTimestamp
+    stat -c '%y  %n' Service.qml
+
+## The collector works but the panel shows stale values
+
+The collector publishes through a cache file; the fast tick re-reads the cache
+and the slow tick rebuilds it. If the panel looks frozen, check the cache
+directly:
+
+    cat "${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/hermes-deck/cache.json"
+
+A missing or unparseable cache degrades to an empty inventory rather than an
+error, so a silent cache problem looks like "no sessions" instead of a failure.
+
 ## Search returns nothing
 
 Search reads the `messages_fts` full-text index inside `state.db`. Three
