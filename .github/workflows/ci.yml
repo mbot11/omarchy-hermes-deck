@@ -23,6 +23,20 @@ jobs:
           python3 tests/check-secrets.py --self-test
           python3 tests/check-secrets.py
 
+      - name: Image audit (metadata and pixels)
+        run: |
+          sudo apt-get install -y -qq tesseract-ocr >/dev/null
+          python3 tests/check-image-safety.py --self-test
+          mapfile -t IMAGES < <(git ls-files | grep -iE '\.(png|jpe?g|webp|avif|gif)$')
+          if [ "${#IMAGES[@]}" -gt 0 ]; then
+            python3 tests/check-image-safety.py "${IMAGES[@]}"
+          else
+            echo "no tracked images"
+          fi
+
+      - name: Image audit logic tests
+        run: python3 tests/test_image_audit.py
+
       - name: Collector behavioral tests
         run: python3 tests/test_collect.py
 

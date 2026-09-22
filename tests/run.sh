@@ -13,11 +13,29 @@ bash -n "$root/scripts/deck-act"
 python3 -m py_compile "$root/scripts/deck-collect"
 python3 -m py_compile "$here/check-qml-plaintext.py"
 python3 -m py_compile "$here/check-secrets.py"
+python3 -m py_compile "$here/check-image-safety.py"
+python3 -m py_compile "$here/test_image_audit.py"
 
 echo
 echo "== secret / identity / artifact audit (pushed blobs) =="
 python3 "$here/check-secrets.py" --self-test
 python3 "$here/check-secrets.py"
+
+echo
+echo "== image audit logic (regression tests for the detectors) =="
+python3 "$here/test_image_audit.py"
+
+echo
+echo "== image audit (every tracked image, before it can be published) =="
+python3 "$here/check-image-safety.py" --self-test
+# Audit every image the tree would publish. A screenshot is the one artifact no
+# text scanner can read, so it gets its own pass over metadata and pixels.
+mapfile -t IMAGES < <(git ls-files | grep -iE '\.(png|jpe?g|webp|avif|gif)$')
+if [ "${#IMAGES[@]}" -gt 0 ]; then
+  python3 "$here/check-image-safety.py" "${IMAGES[@]}"
+else
+  echo "no tracked images"
+fi
 
 echo
 echo "== collector behavioral tests =="

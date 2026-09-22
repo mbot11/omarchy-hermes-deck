@@ -115,17 +115,25 @@ def shannon_entropy(text: str) -> float:
 
 
 def read_blob(path: str) -> bytes | None:
-    """Read the committed content of `path`, not the working copy.
+    """Read the content that publication would send for `path`.
 
-    The working copy is not what publication scans: a file can be edited after
-    the commit and `git ls-files` still lists it. Reading the blob means this
-    audit describes exactly what was pushed. A file that is tracked but
-    deleted on disk is still scanned, which is the point.
+    The working copy is not that content: a file can be edited after its commit
+    and `git ls-files` still lists it, so scanning the file on disk would audit
+    bytes that were never published. A tracked-but-deleted file still needs
+    scanning, which the blob form handles.
+
+    The revision is `HEAD` when the path exists there, and the index otherwise.
+    An audit of uncommitted work is the normal case during development, and the
+    index is what a `git commit` would actually capture — so falling back to it
+    audits the staged content rather than refusing to run. `HEAD` is preferred
+    because it is what was published.
     """
-    out = subprocess.run(["git", "cat-file", "blob", f"HEAD:{path}"], capture_output=True)
-    if out.returncode != 0:
-        return None
-    return out.stdout
+    for revision in ("HEAD", None):
+        ref = f"{revision}:{path}" if revision else f":{path}"
+        out = subprocess.run(["git", "cat-file", "blob", ref], capture_output=True)
+        if out.returncode == 0:
+            return out.stdout
+    return None
 
 
 def self_test() -> int:

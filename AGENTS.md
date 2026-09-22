@@ -41,6 +41,14 @@ and a drop-down TUI modal.
 6. **Read-only against Hermes' state.** `state.db` is opened `mode=ro`.
 7. **Never edit `/usr/share/omarchy/`.** Read it freely; it is overwritten on
    update.
+8. **Audit every image before it is committed, pushed, or attached anywhere.**
+   A screenshot is the one artifact no text scanner can read, and a capture of a
+   live desktop carries working directories, session titles, hostnames and
+   possibly keys. Run `python3 tests/check-image-safety.py <image>` first — and
+   use the **full-resolution capture**, because OCR misreads small text and a
+   clean verdict on a downscaled image is weak evidence. Never publish a
+   screenshot that has not passed this gate, including in a review thread or a
+   chat.
 
 ## Running the gates
 

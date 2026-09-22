@@ -32,6 +32,7 @@ loosening it should be loud and discussed.
 | Dimension | Rule | Checked by | Runs at |
 |---|---|---|---|
 | Secrets / identity | no credential shapes, no author account name, no machine-specific absolute path, no stray artifacts | `python3 tests/check-secrets.py` | every edit, CI |
+| Images | no credential, identity or context finding in metadata or pixels, for **every published image** | `python3 tests/check-image-safety.py <image…>` | before any image is committed, CI |
 | Collector behaviour | 23/23 pass | `python3 tests/test_collect.py` | every edit |
 | Action dispatcher | 23/23 pass | `python3 tests/test_act.py` | every edit |
 | QML plain-text | zero unmarked `Text`/`Label` | `python3 tests/check-qml-plaintext.py .` | every edit |
@@ -49,12 +50,46 @@ the thing to fix.
 
 ### The secret audit reads pushed blobs, not the working copy
 
-`tests/check-secrets.py` reads `git cat-file blob HEAD:<path>`, because the
-working copy is not what publication scans. A file edited after its commit is
-still listed by `git ls-files`; scanning the file on disk would report content
-that was never pushed. The blob form also means a file that is tracked but
-deleted from disk is still scanned, and a file present on disk but untracked is
-correctly ignored. Verified in all three directions.
+`tests/check-secrets.py` reads content from git — `HEAD:<path>`, falling back to
+the index for a path not yet committed — because the working copy is not what
+publication scans. A file edited after its commit is still listed by
+`git ls-files`; scanning the file on disk would report content that was never
+pushed. The blob form also means a file that is tracked but deleted from disk is
+still scanned, and a file present on disk but untracked is correctly ignored.
+Verified in all four directions: an uncommitted secret is ignored, a committed
+secret is caught, a staged-but-uncommitted secret is caught, and a
+tracked-but-deleted file is still caught.
+
+### An image is audited before it is published, never after
+
+A screenshot is the one artifact in this repository that **no text scanner can
+read**. `check-secrets.py` opens text blobs; a PNG is opaque to it. A capture of
+a live desktop can carry a session title, a working directory, a hostname, a
+terminal scrollback or an API key into a public listing while every text gate
+reports clean.
+
+So `tests/check-image-safety.py` audits an image two ways and is a **blocking
+gate** on every tracked image:
+
+- **Metadata** — PNG `tEXt`/`zTXt`/`iTXt` chunks, EXIF, and any embedded comment.
+  Author names, machine names, tool paths and GPS survive cropping and
+  resizing, which is what makes them easy to miss by eye.
+- **Pixels** — OCR with tesseract, then the same credential and identity shapes
+  `check-secrets.py` applies to text, plus screenshot-specific ones (an absolute
+  home path, a shell prompt with a cwd, a git remote URL, a private IP).
+
+**Known limitation, stated rather than hidden:** OCR accuracy is a function of
+resolution, and it fails in the direction that matters. At 900×300 the engine
+reads `/home/<user>/` as `homel<user>` and `sk-or-v1-…` as `skor 1`, so the
+patterns miss and the audit returns CLEAN on an image that plainly leaks. The
+script therefore prints an explicit warning below 1000px saying a clean verdict
+is weak evidence. **Audit the full-resolution capture, not a downscaled copy** —
+and note that the published `preview.png` is 450×360, so its clean verdict is
+itself weak.
+
+Consequences for this repository: a screenshot may not be committed, pushed, or
+attached to a review thread until it has passed this gate, and a passing verdict
+is a filter, not a proof — anything not generated here still needs a human look.
 
 ## Measured, not yet enforced (ratchets)
 
