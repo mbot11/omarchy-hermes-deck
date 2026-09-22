@@ -182,30 +182,21 @@ def render(hermes_src: Path, show_all: bool) -> str:
         json.dumps({"jobs": [dict(job) for job in JOBS]}), encoding="utf-8"
     )
 
-    original = cron_jobs._IMPORT_STORE
-    cron_jobs.CRON_DIR = cron_dir
-    cron_jobs.JOBS_FILE = cron_dir / "jobs.json"
-    cron_jobs.OUTPUT_DIR = cron_dir / "output"
-    cron_jobs._IMPORT_STORE = cron_jobs._CronStorePaths(
-        cron_jobs.CRON_DIR, cron_jobs.JOBS_FILE, cron_jobs.OUTPUT_DIR
-    )
-
+    # Redirect the store with upstream's own contextmanager, not by mutating five
+    # module globals by hand. `use_cron_store` (cron/jobs.py:171) sets a
+    # ContextVar and restores it on exit, so there is no window where the real
+    # store is unreachable and no `finally` that can forget one of the fields —
+    # hand-rolled global mutation is how a leaked temp dir went unnoticed.
     buf = io.StringIO()
-    try:
+    with cron_jobs.use_cron_store(tmp):
         # No ANSI: color is suppressed when stdout is not a tty, which is the
         # case here because we redirect it.
         with contextlib.redirect_stdout(buf):
             cron_cli.cron_list(show_all=show_all)
-    finally:
-        cron_jobs._IMPORT_STORE = original
-        cron_jobs.CRON_DIR = original.cron_dir
-        cron_jobs.JOBS_FILE = original.jobs_file
-        cron_jobs.OUTPUT_DIR = original.output_dir
-        # Remove the throwaway store. The globals were restored but the directory
-        # was not, so every invocation (including every --check in the gate) left
-        # a /tmp/cron-fixture-* directory behind holding a real jobs.json — 44 had
-        # accumulated.
-        shutil.rmtree(tmp, ignore_errors=True)
+    # Remove the throwaway store. Every invocation (including every --check in the
+    # gate) used to leave a /tmp/cron-fixture-* directory behind holding a real
+    # jobs.json — 44 had accumulated.
+    shutil.rmtree(tmp, ignore_errors=True)
     return buf.getvalue()
 
 

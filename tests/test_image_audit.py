@@ -888,6 +888,47 @@ class TestBrokenPillowInstall(unittest.TestCase):
                              "the detection must not crash out of the audit")
 
 
+class TestSecretScanCoversWhatAPushPublishes(unittest.TestCase):
+    """The gate must scan what a clone receives, not just what is staged.
+
+    `git ls-files` lists the INDEX. A path removed from the index while its blob
+    still exists in HEAD (a `git rm --cached`, the delete half of a rename) was
+    never visited: the gate reported CLEAN while `git cat-file -p HEAD:<path>`
+    returned the credential.
+    """
+
+    def test_path_in_head_but_not_the_index_is_still_scanned(self):
+        import os, shutil, subprocess, sys, tempfile
+        d = tempfile.mkdtemp()
+        try:
+            def run(*args):
+                return subprocess.run(list(args), cwd=d, capture_output=True,
+                                      text=True)
+            run("git", "init", "-q", ".")
+            leak = os.path.join(d, "leak.txt")
+            with open(leak, "w") as fh:
+                fh.write('aws = "' + "AKIA" + 'IOSFODNN7EXAMPLE"\n')
+            run("git", "add", "-A")
+            run("git", "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-qm", "x")
+            # remove from the index, keeping the blob in HEAD
+            run("git", "rm", "--cached", "-q", "leak.txt")
+            os.unlink(leak)
+
+            self.assertEqual(run("git", "ls-files").stdout.strip(), "",
+                             "precondition: nothing is tracked")
+            self.assertIn("AKIA", run("git", "cat-file", "-p", "HEAD:leak.txt").stdout,
+                          "precondition: the blob is still in HEAD")
+
+            out = subprocess.run([sys.executable, str(HERE / "check-secrets.py"), "."],
+                                 cwd=d, capture_output=True, text=True)
+            self.assertEqual(out.returncode, 1,
+                             "a credential in HEAD must fail the gate")
+            self.assertIn("SECRET", out.stdout,
+                          f"the HEAD-only path was not scanned: {out.stdout!r}")
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

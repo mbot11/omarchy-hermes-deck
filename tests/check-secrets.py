@@ -116,8 +116,37 @@ ARTIFACT_PATTERNS: list[tuple[str, str]] = [
 
 
 def tracked_files() -> list[str]:
-    out = subprocess.run(["git", "ls-files"], capture_output=True, text=True, check=True)
-    return [line for line in out.stdout.split("\n") if line]
+    """Every path the scan must account for.
+
+    The INDEX alone is not enough. A path can be committed and then removed from
+    the index (a `git rm --cached`, a rename staged as a delete, or the first half
+    of a move) while the blob still exists in HEAD. `git ls-files` does not list
+    it, so the gate never visited it, yet the content is still what a clone
+    receives:
+
+        git rm --cached leak.txt   ->   gate: CLEAN
+        git cat-file -p HEAD:leak.txt  ->   aws = "AKIA..."
+
+    Reported, not silently passed. Union of the index and HEAD, so a path that is
+    in either is scanned.
+    """
+    paths: set[str] = set()
+    index = subprocess.run(["git", "ls-files"], capture_output=True, text=True)
+    paths.update(line for line in index.stdout.split("\n") if line)
+    head = subprocess.run(["git", "ls-tree", "-r", "--name-only", "HEAD"],
+                          capture_output=True, text=True)
+    if head.returncode == 0:
+        # Only add HEAD paths the gate can actually read as a blob. A path deleted
+        # from HEAD as well is genuinely gone and must not be reported as
+        # unreadable.
+        for line in head.stdout.split("\n"):
+            if not line:
+                continue
+            probe = subprocess.run(["git", "cat-file", "-e", f"HEAD:{line}"],
+                                   capture_output=True)
+            if probe.returncode == 0:
+                paths.add(line)
+    return sorted(paths)
 
 
 def shannon_entropy(text: str) -> float:
