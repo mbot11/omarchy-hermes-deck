@@ -459,18 +459,128 @@ class InventoryTests(unittest.TestCase):
                          [j["name"] for j in slow["cron"]],
                          "the fast tick lost the inventory the slow tick found")
 
-    def test_fast_path_resolves_no_hermes_binary(self) -> None:
-        """Prove it by observation: a recording stub sees no call."""
-        stub_dir = Path(self.tmp.name) / "bin"
-        stub_dir.mkdir()
-        record = Path(self.tmp.name) / "calls.log"
+    def _recording_env(self):
+        """An env where ANY spawn is observable.
+
+        PATH replacement alone is not enough: resolve_hermes() falls back to the
+        absolute ~/.local/bin/hermes, which still exists when PATH is replaced —
+        so a subprocess added through that fallback was invisible to the earlier
+        tests. Pointing HOME at an empty directory makes the fallback unresolvable
+        and puts only the recording stub on PATH, so both resolution routes are
+        covered.
+        """
+        base = Path(self.tmp.name)
+        stub_dir = base / "bin"
+        stub_dir.mkdir(exist_ok=True)
+        record = base / "calls.log"
         stub = stub_dir / "hermes"
         stub.write_text(f'#!/usr/bin/env bash\necho "$@" >> {record}\nexit 0\n')
         stub.chmod(0o755)
+        fake_home = base / "home"
+        fake_home.mkdir(exist_ok=True)
+        # Keep the SYSTEM path: replacing PATH outright breaks the stub's own
+        # shebang (`bash: command not found`, exit 127), so the recorder never
+        # ran and the control test below would have reported a false negative.
+        # The stub directory comes FIRST, so it wins the lookup.
+        system_path = os.pathsep.join(
+            d for d in ("/usr/bin", "/bin", "/usr/local/bin") if Path(d).is_dir()
+        )
+        return {"PATH": f"{stub_dir}{os.pathsep}{system_path}",
+                "HOME": str(fake_home)}, record
 
-        run_collect(self.home, self.state, extra_env={"PATH": str(stub_dir)})
+    def test_fast_path_resolves_no_hermes_binary(self) -> None:
+        """Prove it by observation, with the absolute fallback neutralised."""
+        env, record = self._recording_env()
+        run_collect(self.home, self.state, extra_env=env)
         calls = record.read_text().strip() if record.exists() else ""
         self.assertEqual(calls, "", f"the fast path spawned: {calls!r}")
+
+    def test_fast_path_spawns_only_systemctl(self) -> None:
+        """Pin the WHOLE fast-path process list, not just the `hermes` slot.
+
+        The invariant in AGENTS.md is about avoiding a cold `hermes` CLI (seconds
+        of startup), and `systemctl` is deliberately outside it — two cheap calls
+        for the gateway's active/enabled state. But the earlier tests only watched
+        for `hermes`, so they would not have noticed a THIRD, expensive process
+        being added. This asserts the exact set, by intercepting Popen, so any
+        new spawn on the fast path fails the suite.
+        """
+        base = Path(self.tmp.name)
+        runner = base / "runner.py"
+        runner.write_text(
+            "import json, runpy, subprocess, sys\n"
+            "calls = []\n"
+            "_real = subprocess.Popen\n"
+            "class Spy:\n"
+            "    def __init__(self, *a, **kw):\n"
+            "        calls.append(a[0] if a else kw.get('args'))\n"
+            "        self._p = _real(*a, **kw)\n"
+            "    def __getattr__(self, n):\n"
+            "        return getattr(self._p, n)\n"
+            "subprocess.Popen = Spy\n"
+            "sys.argv = ['deck-collect'] + sys.argv[1:]\n"
+            "try:\n"
+            "    runpy.run_path('scripts/deck-collect', run_name='__main__')\n"
+            "except SystemExit:\n"
+            "    pass\n"
+            "print(json.dumps(calls), file=sys.stderr)\n"
+        )
+        env = dict(os.environ)
+        env["HERMES_HOME"] = str(self.home)
+        env["XDG_STATE_HOME"] = str(self.state)
+        result = subprocess.run([sys.executable, str(runner)], capture_output=True,
+                                text=True, env=env, cwd=str(COLLECT.parent.parent))
+        raw = result.stderr.strip().splitlines()
+        spawned = json.loads(raw[-1]) if raw else []
+        binaries = sorted({(c[0] if isinstance(c, list) else str(c)) for c in spawned})
+        self.assertEqual(
+            binaries, ["/usr/bin/systemctl"],
+            f"the fast path spawned something new: {spawned!r} — if this is intended,"
+            " document it in AGENTS.md invariant 2 and update this test",
+        )
+        # And nothing hermes-shaped as an EXECUTABLE, which is the expensive
+        # case. Only argv[0] is tested: `systemctl ... hermes-gateway.service`
+        # legitimately contains the word "hermes" in a unit name, so matching
+        # the whole argv would fail on the correct behaviour.
+        for call in spawned:
+            executable = (call[0] if isinstance(call, list) else str(call)).rsplit("/", 1)[-1]
+            self.assertNotEqual(
+                executable, "hermes",
+                f"the fast path invoked the hermes CLI: {call!r}",
+            )
+
+    def test_fast_path_spawns_nothing_even_when_hermes_is_on_path(self) -> None:
+        """The stub IS resolvable here, so a spawn would be recorded.
+
+        This is the test that would have caught a subprocess added via the
+        absolute-path fallback: the earlier version replaced PATH but left HOME
+        intact, so the real binary was still found and the stub never consulted.
+        """
+        env, record = self._recording_env()
+        # Sanity: the stub really is the resolved binary in this env. PATH is a
+        # list now, so take its FIRST entry rather than treating it as a path.
+        stub = Path(env["PATH"].split(os.pathsep)[0]) / "hermes"
+        self.assertTrue(stub.is_file(), f"no stub at {stub}")
+        probe = subprocess.run([str(stub), "--version"], capture_output=True,
+                               text=True, env=dict(os.environ, **env))
+        self.assertEqual(probe.returncode, 0, probe.stderr)
+        record.unlink(missing_ok=True)
+
+        run_collect(self.home, self.state, extra_env=env)
+        calls = record.read_text().strip() if record.exists() else ""
+        self.assertEqual(calls, "", f"the fast path spawned: {calls!r}")
+
+    def test_slow_path_does_spawn_when_asked(self) -> None:
+        """Control: the recorder must be capable of seeing a call.
+
+        Without this, the two tests above would also pass if the stub were simply
+        never executable — a test that cannot observe a spawn cannot prove none
+        happened.
+        """
+        env, record = self._recording_env()
+        run_collect(self.home, self.state, "--include-slow", extra_env=env)
+        self.assertTrue(record.exists() and record.read_text().strip(),
+                        "the recorder saw no call even on the slow path")
 
     def test_inventory_survives_a_missing_cli(self) -> None:
         """A broken `hermes` binary must degrade, not crash the panel."""

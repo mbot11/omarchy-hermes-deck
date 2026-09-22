@@ -372,6 +372,59 @@ class TestFailClosedOnUnreadableFormats(unittest.TestCase):
                           f"an unreadable format produced no finding: {findings!r}")
 
 
+class TestNonImageIsNotVouchedFor(unittest.TestCase):
+    """A file that is not a readable image must not produce CLEAN.
+
+    A mislabelled file (plaintext renamed .png, truncated download, a non-image
+    with an image extension) yields no metadata and no OCR text, so the audit saw
+    nothing and said CLEAN — "detected nothing" and "nothing to detect" were
+    indistinguishable, and a credential sitting in that file was vouched for.
+    """
+
+    def test_plaintext_with_an_image_name_is_reported(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "not-really.png"
+            path.write_text("api_key = " + "sk-live-" + "abcdefghijklmnop\n")
+            findings = cis.audit_image(path)
+            labels = [f[1] for f in findings]
+            self.assertIn("not a decodable image", labels,
+                          f"a non-image was quietly accepted: {findings!r}")
+
+    def test_magic_bytes_identify_real_formats(self):
+        import io
+        import struct
+        import tempfile
+        import zlib
+
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmp:
+            png = Path(tmp) / "real.png"
+            Image.new("RGB", (8, 8)).save(png)
+            self.assertTrue(cis._looks_like_an_image(png))
+
+            jpg = Path(tmp) / "real.jpg"
+            Image.new("RGB", (8, 8)).save(jpg, "JPEG")
+            self.assertTrue(cis._looks_like_an_image(jpg))
+
+            txt = Path(tmp) / "fake.png"
+            txt.write_text("not an image at all")
+            self.assertFalse(cis._looks_like_an_image(txt))
+
+    def test_empty_file_is_not_an_image(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "empty.png"
+            path.write_bytes(b"")
+            self.assertFalse(cis._looks_like_an_image(path))
+
+    def test_missing_file_is_not_an_image(self):
+        self.assertFalse(cis._looks_like_an_image(Path("/nonexistent/x.png")))
+
+
 class TestLeakDetectors(unittest.TestCase):
     """The exemption is exercised through audit_image, not just scan_text."""
 

@@ -45,7 +45,9 @@ Cron section does not blink out between refreshes.
 
 Rules that must not regress:
 
-- Fast path (no flags) never spawns a `hermes` process.
+- Fast path (no flags) never spawns a `hermes` process. It does run two
+  `/usr/bin/systemctl --user` calls for the gateway state; the no-spawn rule
+  is about the cold CLI, not process count. A test pins the exact set.
 - A dict-format `model:` block (custom endpoint) returns empty and defers
   to `hermes config get model.default` — never guess (hermes-harness#2).
 - Missing database/config degrades sections; `errors[]` notes why.

@@ -30,8 +30,12 @@ and a drop-down TUI modal.
 
 1. **Python stdlib only.** No pip packages, no virtualenv, in the collector or
    the test scripts. The plugin must run on a stock Omarchy install.
-2. **Fast-path zero subprocess.** `deck-collect` without `--include-slow` must
-   never spawn a `hermes` process. A cold Hermes CLI costs seconds of startup.
+2. **No `hermes` CLI on the fast path.** `deck-collect` without `--include-slow`
+   must never spawn a `hermes` process — a cold Hermes CLI costs seconds of
+   startup. It DOES spawn two `/usr/bin/systemctl --user` calls for the gateway's
+   active/enabled state; those are cheap and deliberate. The test asserts the
+   exact process set, so adding any third spawn fails the suite rather than
+   passing unnoticed.
 3. **Fixed-argument allowlist.** `deck-act` takes an action name, never a
    command string. Every dynamic value is regex-validated before use.
 4. **No credential access.** Never read, copy, or print `auth.json`, `.env`,

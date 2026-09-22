@@ -220,6 +220,49 @@ def _has_pillow() -> bool:
 PILLOW_ONLY_SUFFIXES = {".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".heic", ".avif", ".bmp"}
 
 
+# Magic bytes for the formats this audit accepts. A file matching none of these
+# is not an image this gate can reason about.
+IMAGE_MAGIC = (
+    b"\x89PNG\r\n\x1a\n",   # PNG
+    b"\xff\xd8\xff",           # JPEG
+    b"GIF87a", b"GIF89a",        # GIF
+    b"RIFF",                      # WebP (RIFF....WEBP) and AVIF-ish containers
+    b"II*\x00", b"MM\x00*",       # TIFF little/big endian
+    b"BM",                        # BMP
+    b"\x00\x00\x00",             # ftyp-based containers (HEIC/AVIF): checked below
+)
+
+
+def _looks_like_an_image(path: Path) -> bool:
+    """True when the bytes identify a known image format.
+
+    Pillow is authoritative where it exists; this is the check that still works
+    without it, and it is what stops a renamed text file from being vouched for.
+    """
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(32)
+    except OSError:
+        return False
+    if not head:
+        return False
+    for magic in IMAGE_MAGIC[:-1]:
+        if head.startswith(magic):
+            return True
+    # ftyp containers: bytes 4..8 are b"ftyp" (HEIC, AVIF, MP4-ish).
+    if len(head) >= 12 and head[4:8] == b"ftyp":
+        return True
+    # Anything Pillow can open counts too, for formats without a listed magic.
+    try:
+        from PIL import Image
+
+        with Image.open(path) as probe:
+            probe.verify()
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def image_metadata(path: Path) -> dict[str, str]:
     """Every text-bearing metadata field the image carries."""
     size = path.stat().st_size
@@ -329,6 +372,20 @@ def audit_image(path: Path, explain: bool = False) -> list[tuple[str, str, str]]
     # metadata at all and returned CLEAN on a file carrying a credential in
     # EXIF — the exact fail-open the CI comment claimed was fixed. An
     # unreadable-but-plausible artifact must be reported, never vouched for.
+    # An image we could not decode AT ALL must not be vouched for. A non-image
+    # with an image extension (a mislabelled file, a truncated download, a
+    # plaintext file someone renamed) yields no metadata and no OCR text, so the
+    # audit saw nothing and said CLEAN — "we detected nothing" and "there was
+    # nothing to detect" were indistinguishable. Require evidence that this is a
+    # real image before accepting a clean verdict.
+    if not _looks_like_an_image(path):
+        findings.append((
+            f"metadata:{path.suffix.lower() or 'no-extension'}",
+            "not a decodable image",
+            f"{path.name}: no PNG signature or decodable header, so this file was"
+            " NOT audited as an image — check what it actually is",
+        ))
+
     suffix = path.suffix.lower()
     if not _has_pillow() and suffix in PILLOW_ONLY_SUFFIXES:
         findings.append((
