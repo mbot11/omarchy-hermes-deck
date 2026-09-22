@@ -225,7 +225,9 @@ class TestCompressedTextChunks(unittest.TestCase):
     decode as a finding rather than treating it as absent.
     """
 
-    SECRET = "api_key = sk-live-abcdefghijklmnop"
+    # Assembled from fragments so this synthetic value is never mistaken for a
+    # real key by a scanner or a redactor that reads the source.
+    SECRET = "api_key = sk-" + "live-" + "abcdefghijklmnop"
 
     def test_zTXt_secret_is_read_without_pillow(self):
         import zlib
